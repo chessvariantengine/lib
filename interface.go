@@ -88,6 +88,9 @@ var Protocol int
 // test mode
 var TEST bool = true
 
+// use unicode symbols in test print of board
+var USE_UNICODE_SYMBOLS = true
+
 // enumeration of variants
 const(
 	VARIANT_Standard          = iota             
