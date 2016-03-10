@@ -1,7 +1,15 @@
 //////////////////////////////////////////////////////
 // interface.go
 // implements the engine interface
+// zurichess sources: main.go, uci.go
 //////////////////////////////////////////////////////
+
+///////////////////////////////////////////////
+//  : 
+// ->  : 
+// <-  : 
+
+///////////////////////////////////////////////
 
 package lib
 
@@ -67,6 +75,74 @@ var argptr int
 
 // line command
 var command string
+
+// Author
+var Author = "Alexandru Mosoi"
+
+// current variant
+var Variant int
+
+// current protocol
+var Protocol int
+
+// test mode
+var TEST bool = true
+
+// enumeration of variants
+const(
+	VARIANT_Standard          = iota             
+	VARIANT_Racing_Kings
+)
+
+// enumeration of protocols
+const(
+	PROTOCOL_UCI              = iota
+	PROTOCOL_XBOARD
+)
+
+// names of variants
+var VARIANT_TO_NAME=[...]string{
+	"Standard",
+	"Racing Kings",
+}
+
+// names of protocols
+var PROTOCOL_TO_NAME=[...]string{
+	"UCI",
+	"XBOARD",
+}
+
+// variant name to variant
+var VARIANT_NAME_TO_VARIANT=map[string]int{
+	"Standard": VARIANT_Standard,
+	"Racing Kings": VARIANT_Racing_Kings,
+}
+
+var VARIANT_SHORTHAND_NAME_TO_VARIANT=map[string]int{
+	"s": VARIANT_Standard,
+	"rk": VARIANT_Racing_Kings,
+}
+
+// variant and protocol to engine name
+type EngineNameIndex struct{
+	variant int
+	protocol int
+}
+
+var VARIANT_AND_PROTOCOL_TO_ENGINE_NAME=map[EngineNameIndex]string{
+	EngineNameIndex{ variant: VARIANT_Standard, protocol: PROTOCOL_UCI }:"zurichess",
+	EngineNameIndex{ variant: VARIANT_Racing_Kings, protocol: PROTOCOL_UCI }:"verkuci",
+}
+
+// quit application 'error'
+var (
+	errQuit = fmt.Errorf("quit")
+)
+
+// test command ok 'error'
+var (
+	errTestOk = fmt.Errorf("testok")
+)
 
 ///////////////////////////////////////////////
 // ExecuteLine : execute command line
@@ -150,7 +226,7 @@ func ExecuteTest() error {
 func ExecuteUci() error {
 	switch command {
 	case "uci":
-		Printu(fmt.Sprintf("id name %s\n",VARIANT_TO_ENGINE_NAME[Variant]))
+		Printu(fmt.Sprintf("id name %s\n",GetEngineName()))
 		Printu(fmt.Sprintf("id author %s\n",Author))
 		Printu("\n")
 		Printu("option name UCI_AnalyseMode type check default false\n")
@@ -174,75 +250,26 @@ func ExecuteXboard() error {
 
 ///////////////////////////////////////////////
 
-// Author
-var Author = "Alexandru Mosoi"
+///////////////////////////////////////////////
+// GetEngineName : determine engine name for given variant and protocol
+// <- str string : engine name
 
-// current variant
-var Variant int
-
-// current protocol
-var Protocol int
-
-// test mode
-var TEST bool = true
-
-// enumeration of variants
-const(
-	VARIANT_Standard          = iota             
-	VARIANT_Racing_Kings
-)
-
-// enumeration of protocols
-const(
-	PROTOCOL_UCI              = iota
-	PROTOCOL_XBOARD
-)
-
-// names of variants
-var VARIANT_TO_NAME=[...]string{
-	"Standard",
-	"Racing Kings",
+func GetEngineName() string {
+	return VARIANT_AND_PROTOCOL_TO_ENGINE_NAME[EngineNameIndex{variant: Variant, protocol: Protocol}]
 }
 
-// variant name to variant
-var VARIANT_NAME_TO_VARIANT=map[string]int{
-	"Standard": VARIANT_Standard,
-	"Racing Kings": VARIANT_Racing_Kings,
-}
-
-var VARIANT_SHORTHAND_NAME_TO_VARIANT=map[string]int{
-	"s": VARIANT_Standard,
-	"rk": VARIANT_Racing_Kings,
-}
-
-// variant to engine name
-var VARIANT_TO_ENGINE_NAME=[...]string{
-	"zurichess",
-	"verkuci",
-}
-
-// names of protocols
-var PROTOCOL_TO_NAME=[...]string{
-	"UCI",
-	"XBOARD",
-}
-
-// quit application 'error'
-var (
-	errQuit = fmt.Errorf("quit")
-)
-
-// test command ok 'error'
-var (
-	errTestOk = fmt.Errorf("testok")
-)
+///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
 // Intro : introduction
 // <- string : introduction
 
 func Intro() string {
-	return fmt.Sprintf("%s %s chess variant %s engine by %s\n",VARIANT_TO_ENGINE_NAME[Variant],VARIANT_TO_NAME[Variant],PROTOCOL_TO_NAME[Protocol],Author)
+	return fmt.Sprintf("%s %s chess variant %s engine by %s\n",
+		GetEngineName(),
+		VARIANT_TO_NAME[Variant],
+		PROTOCOL_TO_NAME[Protocol],
+		Author)
 }
 
 ///////////////////////////////////////////////
@@ -259,7 +286,7 @@ func Printu(str string) {
 
 ///////////////////////////////////////////////
 // GetRest : get rest of arguments as a single string
-// -> str string : rest of arguments joined by space
+// <- str string : rest of arguments joined by space
 
 func GetRest() string {
 	if (numargs-argptr)>0 {
