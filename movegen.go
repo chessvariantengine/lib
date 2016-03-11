@@ -35,6 +35,9 @@ const (
 	FigureMaxValue  = King
 )
 
+// figure to name
+var FigureToName = [...]string{".","Pawn","Knight","Bishop","Rook","Queen","King"}
+
 // figure to symbol
 var (
 	figureToSymbol = map[Figure]string{

@@ -61,6 +61,21 @@ func Run(variant int, protocol int) {
 
 //////////////////////////////////////////////////////
 
+// enumeration of variants
+const(
+	VARIANT_Standard          = iota             
+	VARIANT_Racing_Kings
+)
+
+// starting positions for variants
+var START_FENS = [...]string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"8/8/8/8/8/8/krbnNBRK/qrbnNBRQ w - - 0 1",
+	}
+
+// current variant
+const VARIANT_CURRENT        = -1
+
 // line read from stdin for execution
 var line string
 
@@ -90,12 +105,6 @@ var TEST bool = true
 
 // use unicode symbols in test print of board
 var USE_UNICODE_SYMBOLS = true
-
-// enumeration of variants
-const(
-	VARIANT_Standard          = iota             
-	VARIANT_Racing_Kings
-)
 
 // enumeration of protocols
 const(
