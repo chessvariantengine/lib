@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////
 // movegen.go
 // everything that is necessary for move generation
-// zurichess sources: basic.go, misc.go, position.go, convert.go, polyglot.go
+// zurichess sources: basic.go, misc.go, position.go, convert.go, polyglot.go, attack.go
 //////////////////////////////////////////////////////
 
 package lib
@@ -11,6 +11,8 @@ package lib
 import(
 	"fmt"
 	"strconv"
+	"math"
+	"math/rand"
 )
 
 ///////////////////////////////////////////////
@@ -320,10 +322,8 @@ var (
 	itoa               = "0123456789" // shortcut for Itoa
 	colorToSymbol      = "?bw"
 	pieceToSymbol      = ".?pPnNbBrRqQkK"
-	///////////////////////////////////////////////////
-	// NEW
-	pieceToSymbolU     = []rune(".?♙♟♘♞♗♝♖♜♕♛♔♚")
-	///////////////////////////////////////////////////
+	pieceToSymbolU     = []rune("☐?♙♟♘♞♗♝♖♜♕♛♔♚")
+	
 	symbolToCastleInfo = map[rune]castleInfo{
 		'K': castleInfo{
 			Castle: WhiteOO,
@@ -579,6 +579,50 @@ var (
 		0xF8D626AAAF278509,
 	}
 )
+
+var (
+	// bbPawnAttack contains pawn's attack tables.
+	bbPawnAttack [64]Bitboard
+	// bbKnightAttack contains knight's attack tables.
+	bbKnightAttack [64]Bitboard
+	// bbKingAttack contains king's attack tables (excluding castling).
+	bbKingAttack [64]Bitboard
+	// bbSuperAttack contains queen piece's attack tables. This queen can jump.
+	bbSuperAttack [64]Bitboard
+
+	rookMagic    [64]magicInfo
+	rookDeltas   = [][2]int{{-1, +0}, {+1, +0}, {+0, -1}, {+0, +1}}
+	bishopMagic  [64]magicInfo
+	bishopDeltas = [][2]int{{-1, +1}, {+1, +1}, {+1, -1}, {-1, -1}}
+)
+
+type wizard struct {
+	// Sliding deltas.
+	Deltas        [][2]int
+	MinShift      uint // Which shifts to search.
+	MaxShift      uint
+	MaxNumEntries uint // How much to search.
+	Rand          *rand.Rand
+
+	numMagicTests uint
+	magics        [64]uint64
+	shifts        [64]uint // Number of bits for indexes.
+
+	store     []Bitboard // Temporary store to check hash collisions.
+	reference []Bitboard
+	occupancy []Bitboard
+}
+
+type magicInfo struct {
+	store []Bitboard // attack boards of size 1<<(64-shift)
+	mask  Bitboard   // square's mask.
+	magic uint64     // magic multiplier
+	shift uint       // shift bits to index store
+	pad   [2]uint64  // padding so the structure has 32 bytes.
+}
+
+const GET_FIRST              = true
+const GET_ALL                = false
 
 // end definitions
 ///////////////////////////////////////////////
@@ -1349,15 +1393,488 @@ func min(a, b int32) int32 {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// init : initialize lost castle rights
+// initLostCastleRights : initialize lost castle rights
 
-func init() {
+func initLostCastleRights() {
 	lostCastleRights[SquareA1] = WhiteOOO
 	lostCastleRights[SquareE1] = WhiteOOO | WhiteOO
 	lostCastleRights[SquareH1] = WhiteOO
 	lostCastleRights[SquareA8] = BlackOOO
 	lostCastleRights[SquareE8] = BlackOOO | BlackOO
 	lostCastleRights[SquareH8] = BlackOO
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// initJumpAttack : init jump attacks
+// -> jump [][2]int : jump
+// -> attack []Bitboard : attack
+
+func initJumpAttack(jump [][2]int, attack []Bitboard) {
+	for r := 0; r < 8; r++ {
+		for f := 0; f < 8; f++ {
+			bb := Bitboard(0)
+			for _, d := range jump {
+				r0, f0 := r+d[0], f+d[1]
+				if 0 > r0 || r0 >= 8 || 0 > f0 || f0 >= 8 {
+					continue
+				}
+				bb |= RankFile(r0, f0).Bitboard()
+			}
+			attack[RankFile(r, f)] = bb
+		}
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// initBbPawnAttack : init pawn attacks
+
+func initBbPawnAttack() {
+	pawnJump := [][2]int{
+		{-1, -1}, {-1, +1}, {+1, +1}, {+1, -1},
+	}
+	initJumpAttack(pawnJump, bbPawnAttack[:])
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// initBbKnightAttack : init knight attacks
+
+func initBbKnightAttack() {
+	knightJump := [][2]int{
+		{-2, -1}, {-2, +1}, {+2, -1}, {+2, +1},
+		{-1, -2}, {-1, +2}, {+1, -2}, {+1, +2},
+	}
+	initJumpAttack(knightJump, bbKnightAttack[:])
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// initBbKingAttack : init king attacks
+
+func initBbKingAttack() {
+	kingJump := [][2]int{
+		{-1, -1}, {-1, +0}, {-1, +1}, {+0, +1},
+		{+1, +1}, {+1, +0}, {+1, -1}, {+0, -1},
+	}
+	initJumpAttack(kingJump, bbKingAttack[:])
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// slidingAttack : sliding attacks
+// -> sq Square : square
+// -> deltas [][2]int : deltas
+// -> occupancy Bitboard : occupancy
+// <- Bitboard : attacks bitboard
+
+func slidingAttack(sq Square, deltas [][2]int, occupancy Bitboard) Bitboard {
+	r, f := sq.Rank(), sq.File()
+	bb := Bitboard(0)
+	for _, d := range deltas {
+		r0, f0 := r, f
+		for {
+			r0, f0 = r0+d[0], f0+d[1]
+			if 0 > r0 || r0 >= 8 || 0 > f0 || f0 >= 8 {
+				// Stop when outside of the board.
+				break
+			}
+			sq0 := RankFile(r0, f0)
+			bb |= sq0.Bitboard()
+			if occupancy&sq0.Bitboard() != 0 {
+				// Stop when a piece was hit.
+				break
+			}
+		}
+	}
+	return bb
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// SetMagic : set magic
+// -> mi []magicInfo : magic info
+// -> sq Square : squareű
+// -> magic uint64 : magic
+// -> shift uint : shift
+
+func (wiz *wizard) SetMagic(mi []magicInfo, sq Square, magic uint64, shift uint) {
+	wiz.prepare(sq)
+	if !wiz.tryMagicNumber(&mi[sq], sq, magic, shift) {
+		panic(fmt.Sprintf("invalid magic: sq=%v magic=%d shift=%d", sq, magic, shift))
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// prepare : computes reference and occupancy tables for a square
+// -> wiz *wizard : wizard
+// -> sq Square : square
+
+func (wiz *wizard) prepare(sq Square) {
+	wiz.reference = wiz.reference[:0]
+	wiz.occupancy = wiz.occupancy[:0]
+
+	// Carry-Rippler trick to enumerate all subsets of mask.
+	for mask, subset := wiz.mask(sq), Bitboard(0); ; {
+		attack := slidingAttack(sq, wiz.Deltas, subset)
+		wiz.reference = append(wiz.reference, subset)
+		wiz.occupancy = append(wiz.occupancy, attack)
+		subset = (subset - mask) & mask
+		if subset == 0 {
+			break
+		}
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// tryMagicNumber : try magic number
+// -> wiz *wizard : wizard
+// -> mi *magicInfo : magic info
+// -> sq Square : square
+// -> magic uint64 : magic
+// -> shift uint : shift
+// -> bool : true if ok
+
+func (wiz *wizard) tryMagicNumber(mi *magicInfo, sq Square, magic uint64, shift uint) bool {
+	wiz.numMagicTests++
+
+	// Clear store.
+	if len(wiz.store) < 1<<shift {
+		wiz.store = make([]Bitboard, 1<<shift)
+	}
+	for j := range wiz.store[:1<<shift] {
+		wiz.store[j] = 0
+	}
+
+	// Verify that magic gives a perfect hash.
+	for i, bb := range wiz.reference {
+		index := spell(magic, 32-shift, bb)
+		if wiz.store[index] != 0 && wiz.store[index] != wiz.occupancy[i] {
+			return false
+		}
+		wiz.store[index] = wiz.occupancy[i]
+	}
+
+	// Perfect hash, store it.
+	wiz.magics[sq] = magic
+	wiz.shifts[sq] = shift
+
+	mi.store = make([]Bitboard, 1<<shift)
+	copy(mi.store, wiz.store)
+	mi.mask = wiz.mask(sq)
+	mi.magic = magic
+	mi.shift = 32 - shift
+	return true
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// mask : returns the attack set on empty board minus the border
+// -> wiz *wizard : wizard
+// -> sq Square : square
+// <- Bitboard : attack bitboard
+
+func (wiz *wizard) mask(sq Square) Bitboard {
+	// Compute border. Trick source: stockfish.
+	border := (BbRank1 | BbRank8) & ^RankBb(sq.Rank())
+	border |= (BbFileA | BbFileH) & ^FileBb(sq.File())
+	return ^border & slidingAttack(sq, wiz.Deltas, BbEmpty)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// spell : spell
+// magic uint64 : magic
+// shift uint : shift
+// bb Bitboard : Bitboard
+// <- uint : spell
+
+func spell(magic uint64, shift uint, bb Bitboard) uint {
+	mul := magic * uint64(bb)
+	return uint(uint32(mul>>32^mul) >> shift)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// searchMagic : search magic
+// -> wiz *wizard : wizard
+// -> sq Square : square
+// -> mi *magicInfo : magic info
+
+func (wiz *wizard) searchMagic(sq Square, mi *magicInfo) {
+	if wiz.shifts[sq] != 0 && wiz.shifts[sq] <= wiz.MinShift {
+		// Don't search if shift is low enough.
+		return
+	}
+
+	// Try magic numbers with small shifts.
+	wiz.prepare(sq)
+	mask := wiz.mask(sq)
+	for i := 0; i < 100 || wiz.shifts[sq] == 0; i++ {
+		// Pick a smaller shift than current best.
+		var shift uint
+		if wiz.shifts[sq] == 0 {
+			shift = wiz.MaxShift
+		} else {
+			shift = wiz.shifts[sq] - 1
+		}
+
+		// Pick a good magic and test whether it gives a perfect hash.
+		var magic uint64
+		for popcnt(uint64(mask)*magic) < 6 {
+			magic = wiz.randMagic()
+		}
+		wiz.tryMagicNumber(mi, sq, magic, shift)
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// SearchMagic : finds new magics
+// -> wiz *wizard : wizard
+// -> mi []magicInfo : magic info
+
+func (wiz *wizard) SearchMagics(mi []magicInfo) {
+	numEntries := uint(math.MaxUint32)
+	minShift := uint(math.MaxUint32)
+	for numEntries > wiz.MaxNumEntries {
+		numEntries = 0
+		for sq := SquareMinValue; sq <= SquareMaxValue; sq++ {
+			wiz.searchMagic(sq, &mi[sq])
+			numEntries += 1 << wiz.shifts[sq]
+			if minShift > wiz.shifts[sq] {
+				minShift = wiz.shifts[sq]
+			}
+		}
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// randMagic : returns a random magic number
+// -> wiz *wizard : wizard
+// <- uint64 : random magic
+
+func (wiz *wizard) randMagic() uint64 {
+	r := uint64(wiz.Rand.Int63())
+	r &= uint64(wiz.Rand.Int63())
+	r &= uint64(wiz.Rand.Int63())
+	return r<<6 + 1
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// KnightMobility : returns all squares a knight can reach from sq
+// -> sq Square : square
+// <- Bitboard : reachable squares
+
+func KnightMobility(sq Square) Bitboard {
+	return bbKnightAttack[sq]
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// BishopMobility : returns the squares a bishop can reach from sq given all pieces
+// -> sq Square : square
+// -> all Bitboard : all pieces
+// <- Bitboard : reachable squares
+
+func BishopMobility(sq Square, all Bitboard) Bitboard {
+	return bishopMagic[sq].Attack(all)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// RookMobility : returns the squares a rook can reach from sq given all pieces
+// -> sq Square : square
+// -> all Bitboard : all pieces
+// <- Bitboard : reachable squares
+
+func RookMobility(sq Square, all Bitboard) Bitboard {
+	return rookMagic[sq].Attack(all)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// QueenMobility : returns the squares a queen can reach from sq given all pieces
+// -> sq Square : square
+// -> all Bitboard : all pieces
+// <- Bitboard : reachable squares
+
+func QueenMobility(sq Square, all Bitboard) Bitboard {
+	return rookMagic[sq].Attack(all) | bishopMagic[sq].Attack(all)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// KingMobility : returns all squares a king can reach from sq
+// doesn't include castling
+// -> sq Square : square
+// -> all Bitboard : all pieces
+// <- Bitboard : reachable squares
+
+func KingMobility(sq Square) Bitboard {
+	return bbKingAttack[sq]
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// Attack : attack
+// -> mi *magicInfo : magic info
+// -> ref Bitboard : ref
+// <- Bitboard : attack bitboard
+
+func (mi *magicInfo) Attack(ref Bitboard) Bitboard {
+	return mi.store[spell(mi.magic, mi.shift, ref&mi.mask)]
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// initBishopMagic : init bishop magic
+
+func initBishopMagic() {
+	wiz := &wizard{
+		Deltas:        bishopDeltas,
+		MinShift:      5,
+		MaxShift:      9,
+		MaxNumEntries: 6000,
+		Rand:          rand.New(rand.NewSource(1)),
+	}
+
+	// Bishop magics, unlike rook magics are easy to find.
+	wiz.SearchMagics(bishopMagic[:])
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// initRookMagic : init rook magic
+
+func initRookMagic() {
+	wiz := &wizard{
+		Deltas:        rookDeltas,
+		MinShift:      10,
+		MaxShift:      13,
+		MaxNumEntries: 130000,
+		Rand:          rand.New(rand.NewSource(1)),
+	}
+
+	// a set of known good magics for rook
+	// finding good rook magics is slow, so we just use some precomputed values
+	// for readability reasons, do not make an array
+	wiz.SetMagic(rookMagic[:], SquareA1, 36028952711532673, 12)
+	wiz.SetMagic(rookMagic[:], SquareA2, 5066692388487169, 11)
+	wiz.SetMagic(rookMagic[:], SquareA3, 4631389266822304769, 11)
+	wiz.SetMagic(rookMagic[:], SquareA4, 10450310413697025, 11)
+	wiz.SetMagic(rookMagic[:], SquareA5, 140737496752193, 11)
+	wiz.SetMagic(rookMagic[:], SquareA6, 4755801345016995841, 11)
+	wiz.SetMagic(rookMagic[:], SquareA7, 2310346608845258881, 11)
+	wiz.SetMagic(rookMagic[:], SquareA8, 1153273486052196353, 12)
+	wiz.SetMagic(rookMagic[:], SquareB1, 14411536674683101313, 11)
+	wiz.SetMagic(rookMagic[:], SquareB2, 360288245069774977, 10)
+	wiz.SetMagic(rookMagic[:], SquareB3, 9304436831221219585, 10)
+	wiz.SetMagic(rookMagic[:], SquareB4, 90107726679507201, 10)
+	wiz.SetMagic(rookMagic[:], SquareB5, 23081233739161857, 10)
+	wiz.SetMagic(rookMagic[:], SquareB6, 17610976739329, 10)
+	wiz.SetMagic(rookMagic[:], SquareB7, 9007201406419201, 10)
+	wiz.SetMagic(rookMagic[:], SquareB8, 846729215754241, 11)
+	wiz.SetMagic(rookMagic[:], SquareC1, 576496005395513857, 11)
+	wiz.SetMagic(rookMagic[:], SquareC2, 2355383154875302401, 10)
+	wiz.SetMagic(rookMagic[:], SquareC3, 9263904435128516865, 10)
+	wiz.SetMagic(rookMagic[:], SquareC4, 9223653580555165697, 10)
+	wiz.SetMagic(rookMagic[:], SquareC5, 216208542045048897, 10)
+	wiz.SetMagic(rookMagic[:], SquareC6, 2667820173397917761, 10)
+	wiz.SetMagic(rookMagic[:], SquareC7, 360428707682197761, 10)
+	wiz.SetMagic(rookMagic[:], SquareC8, 4611695089401765889, 11)
+	wiz.SetMagic(rookMagic[:], SquareD1, 4604372721729, 11)
+	wiz.SetMagic(rookMagic[:], SquareD2, 9304436898871644161, 10)
+	wiz.SetMagic(rookMagic[:], SquareD3, 596726951168704769, 10)
+	wiz.SetMagic(rookMagic[:], SquareD4, 5190691178076966913, 10)
+	wiz.SetMagic(rookMagic[:], SquareD5, 4655469687738433, 10)
+	wiz.SetMagic(rookMagic[:], SquareD6, 5764660368316567553, 10)
+	wiz.SetMagic(rookMagic[:], SquareD7, 2452350872031592705, 10)
+	wiz.SetMagic(rookMagic[:], SquareD8, 1153211792858550273, 11)
+	wiz.SetMagic(rookMagic[:], SquareE1, 36031546200687617, 11)
+	wiz.SetMagic(rookMagic[:], SquareE2, 144115499663886337, 10)
+	wiz.SetMagic(rookMagic[:], SquareE3, 288388705826635841, 10)
+	wiz.SetMagic(rookMagic[:], SquareE4, 74380329532524545, 10)
+	wiz.SetMagic(rookMagic[:], SquareE5, 4910190248417298433, 10)
+	wiz.SetMagic(rookMagic[:], SquareE6, 2251851487527425, 10)
+	wiz.SetMagic(rookMagic[:], SquareE7, 7881299415531649, 10)
+	wiz.SetMagic(rookMagic[:], SquareE8, 54342271281408001, 11)
+	wiz.SetMagic(rookMagic[:], SquareF1, 36033197213089793, 11)
+	wiz.SetMagic(rookMagic[:], SquareF2, 108086941350626369, 10)
+	wiz.SetMagic(rookMagic[:], SquareF3, 1298162592589676609, 10)
+	wiz.SetMagic(rookMagic[:], SquareF4, 9269586743957521409, 10)
+	wiz.SetMagic(rookMagic[:], SquareF5, 140754676613633, 10)
+	wiz.SetMagic(rookMagic[:], SquareF6, 8859435012, 10)
+	wiz.SetMagic(rookMagic[:], SquareF7, 105622918137857, 10)
+	wiz.SetMagic(rookMagic[:], SquareF8, 93452063091195905, 11)
+	wiz.SetMagic(rookMagic[:], SquareG1, 3848292811265, 11)
+	wiz.SetMagic(rookMagic[:], SquareG2, 9441796687501985793, 10)
+	wiz.SetMagic(rookMagic[:], SquareG3, 668793341028205569, 10)
+	wiz.SetMagic(rookMagic[:], SquareG4, 3503805114303512577, 10)
+	wiz.SetMagic(rookMagic[:], SquareG5, 1441856117960359937, 10)
+	wiz.SetMagic(rookMagic[:], SquareG6, 648529410319974401, 10)
+	wiz.SetMagic(rookMagic[:], SquareG7, 13979322776982393857, 10)
+	wiz.SetMagic(rookMagic[:], SquareG8, 13835060872780858369, 11)
+	wiz.SetMagic(rookMagic[:], SquareH1, 4539788820801, 12)
+	wiz.SetMagic(rookMagic[:], SquareH2, 2359886214407946241, 11)
+	wiz.SetMagic(rookMagic[:], SquareH3, 27041389040664577, 11)
+	wiz.SetMagic(rookMagic[:], SquareH4, 159429253169153, 11)
+	wiz.SetMagic(rookMagic[:], SquareH5, 4613955963706147841, 11)
+	wiz.SetMagic(rookMagic[:], SquareH6, 4611686019534716929, 11)
+	wiz.SetMagic(rookMagic[:], SquareH7, 27025995845339137, 11)
+	wiz.SetMagic(rookMagic[:], SquareH8, 633464726504577, 12)
+
+	// enable the next line to find new magics
+	// wiz.SearchMagics(rookMagic[:])
+}
+
+///////////////////////////////////////////////
+// initBbSuperAttack : init super attacks
+
+func initBbSuperAttack() {
+	for sq := SquareMinValue; sq <= SquareMaxValue; sq++ {
+		bbSuperAttack[sq] = slidingAttack(sq, rookDeltas, BbEmpty) | slidingAttack(sq, bishopDeltas, BbEmpty)
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// initAttacks : initialize attacks
+
+func initAttacks() {
+	initBbPawnAttack()
+	initBbKnightAttack()
+	initBbKingAttack()
+	initBbSuperAttack()
+	initRookMagic()
+	initBishopMagic()
 }
 
 ///////////////////////////////////////////////
@@ -1395,17 +1912,6 @@ func NewPosition() *Position {
 	}
 	pos.curr = &pos.states[pos.Ply]
 	return pos
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// EnpassantSquare : returns the en passant square
-// -> pos *Position : position
-// <- Square : en passant square
-
-func (pos *Position) EnpassantSquare() Square {
-	return pos.curr.EnpassantSquare[1]
 }
 
 ///////////////////////////////////////////////
@@ -1827,7 +2333,7 @@ func (pos *Position) PrintBoard() {
 			}
 		}
 		if(!found){
-			buff="☐"+buff
+			buff=PieceToSymbolStr(NoPiece)+buff
 		} else {
 			if uint64(pos.ByColor[Black]) & mask != 0 {
 				buff=PieceToSymbolStr(Piece(2*j))+buff
@@ -1867,93 +2373,1023 @@ func (pos *Position) String() string {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// prev : returns state at previous ply
+// -> pos *Position : position
+// <- *state : state
+
+func (pos *Position) prev() *state {
+	return &pos.states[len(pos.states)-1]
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// GetNoStates : number of states in position
+// <- int : number of states
+
+func (pos *Position) GetNoStates() int {
+	return len(pos.states)
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// popState : pops one ply
+// -> pos *Position : position
+
+func (pos *Position) popState() {
+	len := len(pos.states) - 1
+	pos.states = pos.states[:len]
+	pos.curr = &pos.states[len-1]
+	pos.Ply--
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// pushState : adds one ply
+// -> pos *Position : position
+
+func (pos *Position) pushState() {
+	len := len(pos.states)
+	pos.states = append(pos.states, pos.states[len-1])
+	pos.curr = &pos.states[len]
+	pos.Ply++
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// FullmoveCounter : returns fullmovecounter
+// -> pos *Position : position
+// <- int : full move counter
+
+func (pos *Position) FullmoveCounter() int {
+	return pos.fullmoveCounter
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// SetFullmoveCounter : sets full move counter
+// -> pos *Position : position
+// -> n int : counter
+
+func (pos *Position) SetFullmoveCounter(n int) {
+	pos.fullmoveCounter = n
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// HalfmoveClock : returns current half move clock
+// -> pos *Position : position
+// <- int : half move clock
+
+func (pos *Position) HalfmoveClock() int {
+	return pos.curr.HalfmoveClock
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// SetHalfmoveClock : sets half move clock
+// -> pos *Position : position
+// -> n int : half move clock 
+
+func (pos *Position) SetHalfmoveClock(n int) {
+	pos.curr.HalfmoveClock = n
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// IsEnpassantSquare : returns true if sq is the en passant square
+// -> pos *Position : position
+// -> sq Square : square to check
+// <- bool : true if square is en passant square
+
+func (pos *Position) IsEnpassantSquare(sq Square) bool {
+	return sq != SquareA1 && sq == pos.EnpassantSquare()
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// EnpassantSquare : returns the en passant square
+// -> pos *Position : position
+// <- Square : en passant square
+
+func (pos *Position) EnpassantSquare() Square {
+	return pos.curr.EnpassantSquare[1]
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// LastMove : returns the last move played, if any
+// -> pos *Position : position
+// <- Move : last move
+
+func (pos *Position) LastMove() Move {
+	return pos.curr.Move
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// Zobrist : returns the zobrist key of the position
+// the returned value is equal to polyglot book key
+// (http://hgm.nubati.net/book_format.html)
+// -> pos *Position : position
+// <- uint64 : Zobrist key
+
+func (pos *Position) Zobrist() uint64 {
+	return pos.curr.Zobrist
+}
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-//  : 
-// ->  : 
-// <-  : 
+// NumNonPawns : returns the number of minor and major pieces
+// -> pos *Position : position
+// -> col Color : side
+// <- int : number of pieces
+
+func (pos *Position) NumNonPawns(col Color) int {
+	return int((pos.ByColor[col] &^ pos.ByFigure[Pawn] &^ pos.ByFigure[King]).Count())
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// HasNonPawns : returns whether col has at least some minor or major pieces
+// -> pos *Position : position
+// -> col Color : side
+// <- bool : true if side has some pieces
+
+func (pos *Position) HasNonPawns(col Color) bool {
+	return pos.ByColor[col]&^pos.ByFigure[Pawn]&^pos.ByFigure[King] != 0
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetAttacker : returns the smallest figure of color them that attacks sq
+// -> pos *Position : position
+// -> sq Square : square
+// -> them Color : them color
+// <- Figure : smallest attacking figure
+
+func (pos *Position) GetAttacker(sq Square, them Color) Figure {
+	enemy := pos.ByColor[them]
+	// Pawn
+	if enemy&bbPawnAttack[sq]&pos.ByFigure[Pawn] != 0 {
+		if att := sq.Bitboard() & pos.PawnThreats(them); att != 0 {
+			return Pawn
+		}
+	}
+	// Knight
+	if enemy&bbKnightAttack[sq]&pos.ByFigure[Knight] != 0 {
+		return Knight
+	}
+	// Quick test of queen's attack on an empty board.
+	// Exclude pawns and knights because they were already tested.
+	enemy &^= pos.ByFigure[Pawn]
+	enemy &^= pos.ByFigure[Knight]
+	if enemy&bbSuperAttack[sq] == 0 {
+		return NoFigure
+	}
+	// Bishop
+	all := pos.ByColor[White] | pos.ByColor[Black]
+	bishop := BishopMobility(sq, all)
+	if enemy&pos.ByFigure[Bishop]&bishop != 0 {
+		return Bishop
+	}
+	// Rook
+	rook := RookMobility(sq, all)
+	if enemy&pos.ByFigure[Rook]&rook != 0 {
+		return Rook
+	}
+	// Queen
+	if enemy&pos.ByFigure[Queen]&(bishop|rook) != 0 {
+		return Queen
+	}
+	// King.
+	if enemy&bbKingAttack[sq]&pos.ByFigure[King] != 0 {
+		return King
+	}
+	return NoFigure
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// PawnThreats : returns the set of squares threatened by side's pawns
+// -> pos *Position : position
+// -> side Color : side
+// <- Bitboard : squares attacked by side's pawns
+
+func (pos *Position) PawnThreats(side Color) Bitboard {
+	pawns := Forward(side, pos.ByPiece(side, Pawn))
+	return West(pawns) | East(pawns)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// IsPseudoLegal : returns true if m is a pseudo legal move for pos
+// it returns true iff m can be executed even if own king is in check
+// after the move, NullMove is not a valid move
+// -> pos *Position : position
+// -> m Move : move
+// <- bool : true if pseudo legal
+
+func (pos *Position) IsPseudoLegal(m Move) bool {
+	if m == NullMove ||
+		m.SideToMove() != pos.SideToMove ||
+		pos.Get(m.From()) != m.Piece() ||
+		pos.Get(m.CaptureSquare()) != m.Capture() ||
+		m.Piece().Color() == m.Capture().Color() {
+		return false
+	}
+
+	if m.Piece().Figure() == Pawn {
+		// Pawn move is tested above. Promotion is always correct.
+		if m.MoveType() == Enpassant && !pos.IsEnpassantSquare(m.To()) {
+			return false
+		}
+		if BbPawnStartRank.Has(m.From()) && BbPawnDoubleRank.Has(m.To()) && !pos.IsEmpty((m.From()+m.To())/2) {
+			return false
+		}
+		return true
+	}
+	if m.Piece().Figure() == Knight {
+		// Knight move is tested above. Knight jumps around.
+		return true
+	}
+
+	// Quick test of queen's attack on an empty board.
+	sq := m.From()
+	to := m.To().Bitboard()
+	if bbSuperAttack[sq]&to == 0 {
+		return false
+	}
+
+	all := pos.ByColor[White] | pos.ByColor[Black]
+
+	switch m.Piece().Figure() {
+	case Pawn: // handled aove
+		panic("unreachable")
+	case Knight: // handled above
+		panic("unreachable")
+	case Bishop:
+		return to&BishopMobility(sq, all) != 0
+	case Rook:
+		return to&RookMobility(sq, all) != 0
+	case Queen:
+		return to&QueenMobility(sq, all) != 0
+	case King:
+		if m.MoveType() == Normal {
+			return to&bbKingAttack[sq] != 0
+		}
+
+		// m.MoveType() == Castling
+		if m.SideToMove() == White && m.To() == SquareG1 {
+			if pos.CastlingAbility()&WhiteOO == 0 ||
+				!pos.IsEmpty(SquareF1) || !pos.IsEmpty(SquareG1) {
+				return false
+			}
+		}
+		if m.SideToMove() == White && m.To() == SquareC1 {
+			if pos.CastlingAbility()&WhiteOOO == 0 ||
+				!pos.IsEmpty(SquareB1) ||
+				!pos.IsEmpty(SquareC1) ||
+				!pos.IsEmpty(SquareD1) {
+				return false
+			}
+		}
+		if m.SideToMove() == Black && m.To() == SquareG8 {
+			if pos.CastlingAbility()&BlackOO == 0 ||
+				!pos.IsEmpty(SquareF8) ||
+				!pos.IsEmpty(SquareG8) {
+				return false
+			}
+		}
+		if m.SideToMove() == Black && m.To() == SquareC8 {
+			if pos.CastlingAbility()&BlackOOO == 0 ||
+				!pos.IsEmpty(SquareB8) ||
+				!pos.IsEmpty(SquareC8) ||
+				!pos.IsEmpty(SquareD8) {
+				return false
+			}
+		}
+		rook, start, end := CastlingRook(m.To())
+		if pos.Get(start) != rook {
+			return false
+		}
+		them := m.SideToMove().Opposite()
+		if pos.GetAttacker(m.From(), them) != NoFigure ||
+			pos.GetAttacker(end, them) != NoFigure ||
+			pos.GetAttacker(m.To(), them) != NoFigure {
+			return false
+		}
+	default:
+		panic("unreachable")
+	}
+
+	return true
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// IsEmpty : returns true if there is no piece at sq
+// -> pos *Position : position
+// -> sq Square : square
+// <- bool : true if empty
+
+func (pos *Position) IsEmpty(sq Square) bool {
+	return !(pos.ByColor[White] | pos.ByColor[Black]).Has(sq)
+}
+
+///////////////////////////////////////////////
+
+
+///////////////////////////////////////////////////
+// OLD
+
+///////////////////////////////////////////////////
+// HasLegalMoves : returns true if current side has any legal moves
+// this function is very expensive
+// -> pos *Position : position
+// <- bool : true if has legal moves
+
+/*func (pos *Position) HasLegalMoves() bool {
+	var moves []Move
+	pos.GenerateMoves(All, &moves)
+	us := pos.SideToMove
+
+	for _, m := range moves {
+		pos.DoMove(m)
+		checked := pos.IsChecked(us)
+		pos.UndoMove()
+
+		if !checked {
+			return true
+		}
+	}
+
+	return false
+}*/
+
+///////////////////////////////////////////////////
+
+// END OLD
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// NEW
+
+///////////////////////////////////////////////////
+// HasLegalMoves : returns true if current side has any legal moves
+// this function is very expensive
+// now we use GetLegalMoves for this
+// -> pos *Position : position
+// <- bool : true if has legal moves
+
+func (pos *Position) HasLegalMoves() bool {
+	numMoves := len(pos.GetLegalMoves(GET_FIRST))
+	return numMoves > 0
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// GetLegalMoves : generate all legal moves
+// -> pos *Position : position
+// -> getfirst bool : only get the first legal move
+// <- []Move : legal move list
+
+func (pos *Position) GetLegalMoves(getfirst bool) []Move {
+	var moves []Move
+	var legalMoves=[]Move{}
+	pos.GenerateMoves(All, &moves)
+	us := pos.SideToMove
+	them := us.Opposite()
+
+	for _, m := range moves {
+		pos.DoMove(m)
+		checked := pos.IsChecked(us)
+		// In Racing Kings any move that gives local check is also illegal.
+		if Variant == VARIANT_Racing_Kings {
+			checkedThem := pos.IsCheckedLocal(them)
+			checked=checked||checkedThem
+		}
+		pos.UndoMove()
+
+		if !checked {
+			if getfirst {	
+				return []Move{m}
+			} else {
+				legalMoves=append(legalMoves,m)
+			}
+		}
+	}
+
+	return legalMoves
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// PrintLegalMoves : print legal moves
+// -> pos *Position
+
+func (pos *Position) PrintLegalMoves() {
+	moves := pos.GetLegalMoves(GET_ALL)
+	for i, move := range moves {
+		fmt.Printf("%2d %6s ",i+1,move.LAN())
+		if ((i%8)==7) && (i!=(len(moves)-1)) {
+			fmt.Printf("\n")
+		}
+	}
+	fmt.Printf("\n")
+}
+
+///////////////////////////////////////////////////
+
+// END NEW
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// UndoMove : takes back the last move
+// -> pos *Position : position
+
+func (pos *Position) UndoMove() {
+	move := pos.LastMove()
+	pos.SetSideToMove(pos.SideToMove.Opposite())
+	// CastlingAbility and EnpassantSquare are restored by pos.popState()
+	// pos.SetCastlingAbility(pos.prev().CastlingAbility)
+	// pos.SetEnpassantSquare(pos.prev().EnpassantSquare[1])
+
+	// modify the chess board
+	pi := move.Piece()
+	pos.Put(move.From(), pi)
+	pos.Remove(move.To(), move.Target())
+	pos.Put(move.CaptureSquare(), move.Capture())
+
+	// move rook on castling
+	if move.MoveType() == Castling {
+		rook, start, end := CastlingRook(move.To())
+		pos.Put(start, rook)
+		pos.Remove(end, rook)
+	}
+
+	if pos.SideToMove == Black {
+		pos.fullmoveCounter--
+	}
+
+	pos.popState()
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genKingMovesNear : generate king move near
+// -> pos *Position : position
+// -> mask Bitboard : mask
+// -> moves *[]Move : moves
+
+func (pos *Position) genKingMovesNear(mask Bitboard, moves *[]Move) {
+	pi := ColorFigure(pos.SideToMove, King)
+	from := pos.ByPiece(pos.SideToMove, King).AsSquare()
+	att := bbKingAttack[from] & mask
+	pos.genBitboardMoves(pi, from, att, moves)
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genBitboardMoves : generate bitboard moves
+// -> pos *Position : position
+// -> pi Piece : piece
+// -> from Square : from square
+// -> att Bitboard : attack bitboard
+// -> moves *[]Move : moves
+
+func (pos *Position) genBitboardMoves(pi Piece, from Square, att Bitboard, moves *[]Move) {
+	for att != 0 {
+		to := att.Pop()
+		*moves = append(*moves, MakeMove(Normal, from, to, pos.Get(to), pi))
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genPawnDoubleAdvanceMoves : moves pawns two square
+// -> pos *Position : position
+// -> kind int : kind
+// -> moves *[]Move : moves
+
+func (pos *Position) genPawnDoubleAdvanceMoves(kind int, moves *[]Move) {
+	if kind&Quiet == 0 {
+		return
+	}
+
+	ours := pos.ByPiece(pos.SideToMove, Pawn)
+	occu := pos.ByColor[White] | pos.ByColor[Black]
+	pawn := ColorFigure(pos.SideToMove, Pawn)
+
+	var forward Square
+	if pos.SideToMove == White {
+		ours &= RankBb(1) &^ South(occu) &^ South(South(occu))
+		forward = RankFile(+2, 0)
+	} else {
+		ours &= RankBb(6) &^ North(occu) &^ North(North(occu))
+		forward = RankFile(-2, 0)
+	}
+
+	for ours != 0 {
+		from := ours.Pop()
+		to := from + forward
+		*moves = append(*moves, MakeMove(Normal, from, to, NoPiece, pawn))
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genBishopMoves : generate bishop moves
+// -> pos *Position : position
+// -> fig Figure : figure
+// -> mask Bitboard : mask
+// -> moves *[]Move
+
+func (pos *Position) genBishopMoves(fig Figure, mask Bitboard, moves *[]Move) {
+	pi := ColorFigure(pos.SideToMove, fig)
+	ref := pos.ByColor[White] | pos.ByColor[Black]
+	for bb := pos.ByPiece(pos.SideToMove, fig); bb != 0; {
+		from := bb.Pop()
+		att := bishopMagic[from].Attack(ref) & mask
+		pos.genBitboardMoves(pi, from, att, moves)
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genRookMoves : generate rook moves
+// -> pos *Position : position
+// -> fig Figure : figure
+// -> mask Bitboard : mask
+// -> moves *[]Move
+
+func (pos *Position) genRookMoves(fig Figure, mask Bitboard, moves *[]Move) {
+	pi := ColorFigure(pos.SideToMove, fig)
+	ref := pos.ByColor[White] | pos.ByColor[Black]
+	for bb := pos.ByPiece(pos.SideToMove, fig); bb != 0; {
+		from := bb.Pop()
+		att := rookMagic[from].Attack(ref) & mask
+		pos.genBitboardMoves(pi, from, att, moves)
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// -> pos *Position : position
+// -> to Square : to square
+// <- MoveType : move type
+// <- Piece : piece
+
+func (pos *Position) pawnCapture(to Square) (MoveType, Piece) {
+	if pos.IsEnpassantSquare(to) {
+		return Enpassant, ColorFigure(pos.SideToMove.Opposite(), Pawn)
+	}
+	return Normal, pos.Get(to)
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genPawnAdvanceMoves : moves pawns one square
+// does not generate promotions
+// -> pos *Position : position
+// kind int : kind
+// moves *[]Move : moves
+
+func (pos *Position) genPawnAdvanceMoves(kind int, moves *[]Move) {
+	if kind&Quiet == 0 {
+		return
+	}
+
+	ours := pos.ByPiece(pos.SideToMove, Pawn)
+	occu := pos.ByColor[White] | pos.ByColor[Black]
+	pawn := ColorFigure(pos.SideToMove, Pawn)
+
+	var forward Square
+	if pos.SideToMove == White {
+		ours = ours &^ South(occu) &^ BbRank7
+		forward = RankFile(+1, 0)
+	} else {
+		ours = ours &^ North(occu) &^ BbRank2
+		forward = RankFile(-1, 0)
+	}
+
+	for ours != 0 {
+		from := ours.Pop()
+		to := from + forward
+		*moves = append(*moves, MakeMove(Normal, from, to, NoPiece, pawn))
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genPawnPromotions : generate pawn promotions
+// -> pos *Position : position
+// kind int : kind
+// moves *[]Move : moves
+
+func (pos *Position) genPawnPromotions(kind int, moves *[]Move) {
+	if kind&(Violent|Tactical) == 0 {
+		return
+	}
+
+	// minimum and maximum promotion pieces
+	// Tactical -> Knight - Rook
+	// Violent -> Queen
+	pMin, pMax := Queen, Rook
+	if kind&Violent != 0 {
+		pMax = Queen
+	}
+	if kind&Tactical != 0 {
+		pMin = Knight
+	}
+
+	us := pos.SideToMove
+	them := us.Opposite()
+
+	// get the pawns that can be promoted
+	all := pos.ByColor[White] | pos.ByColor[Black]
+	ours := pos.ByPiece(us, Pawn)
+	theirs := pos.ByColor[them] // their pieces
+
+	forward := Square(0)
+	if us == White {
+		ours &= BbRank7
+		forward = RankFile(+1, 0)
+	} else {
+		ours &= BbRank2
+		forward = RankFile(-1, 0)
+	}
+
+	for ours != 0 {
+		from := ours.Pop()
+		to := from + forward
+
+		if !all.Has(to) { // advance front
+			for p := pMin; p <= pMax; p++ {
+				*moves = append(*moves, MakeMove(Promotion, from, to, NoPiece, ColorFigure(us, p)))
+			}
+		}
+		if to.File() != 0 && theirs.Has(to-1) { // take west
+			capt := pos.Get(to - 1)
+			for p := pMin; p <= pMax; p++ {
+				*moves = append(*moves, MakeMove(Promotion, from, to-1, capt, ColorFigure(us, p)))
+			}
+		}
+		if to.File() != 7 && theirs.Has(to+1) { // take east
+			capt := pos.Get(to + 1)
+			for p := pMin; p <= pMax; p++ {
+				*moves = append(*moves, MakeMove(Promotion, from, to+1, capt, ColorFigure(us, p)))
+			}
+		}
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genPawnAttackMoves : generate pawn attacks moves
+// does not generate promotions
+// -> pos *Position : position
+// -> kind int : kind
+// -> moves *[]Move : moves
+
+func (pos *Position) genPawnAttackMoves(kind int, moves *[]Move) {
+	if kind&Violent == 0 {
+		return
+	}
+
+	theirs := pos.ByColor[pos.SideToMove.Opposite()]
+	if pos.curr.EnpassantSquare[0] != SquareA1 {
+		theirs |= pos.curr.EnpassantSquare[0].Bitboard()
+	}
+
+	forward := 0
+	pawn := ColorFigure(pos.SideToMove, Pawn)
+	ours := pos.ByPiece(pos.SideToMove, Pawn)
+	if pos.SideToMove == White {
+		ours = ours &^ BbRank7
+		theirs = South(theirs)
+		forward = +1
+	} else {
+		ours = ours &^ BbRank2
+		theirs = North(theirs)
+		forward = -1
+	}
+
+	// Left
+	att := RankFile(forward, -1)
+	for bbl := ours & East(theirs); bbl > 0; {
+		from := bbl.Pop()
+		to := from + att
+		mt, capt := pos.pawnCapture(to)
+		*moves = append(*moves, MakeMove(mt, from, to, capt, pawn))
+	}
+
+	// Right
+	att = RankFile(forward, +1)
+	for bbr := ours & West(theirs); bbr > 0; {
+		from := bbr.Pop()
+		to := from + att
+		mt, capt := pos.pawnCapture(to)
+		*moves = append(*moves, MakeMove(mt, from, to, capt, pawn))
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// genKnightMoves : generate knight moves
+// -> pos *Position : position
+// -> moves *[]Move : moves
+
+func (pos *Position) genKnightMoves(mask Bitboard, moves *[]Move) {
+	pi := ColorFigure(pos.SideToMove, Knight)
+	for bb := pos.ByPiece(pos.SideToMove, Knight); bb != 0; {
+		from := bb.Pop()
+		att := bbKnightAttack[from] & mask
+		pos.genBitboardMoves(pi, from, att, moves)
+	}
+}
+
+///////////////////////////////////////////////////
+// genKingCastles : generate king castles
+// -> pos *Position : position
+// -> kind int : kind
+// -> moves *[]Move : moves
+
+func (pos *Position) genKingCastles(kind int, moves *[]Move) {
+	if kind&Tactical == 0 {
+		return
+	}
+
+	rank := pos.SideToMove.KingHomeRank()
+	oo, ooo := WhiteOO, WhiteOOO
+	if pos.SideToMove == Black {
+		oo, ooo = BlackOO, BlackOOO
+	}
+
+	// Castle king side.
+	if pos.curr.CastlingAbility&oo != 0 {
+		r5 := RankFile(rank, 5)
+		r6 := RankFile(rank, 6)
+		if !pos.IsEmpty(r5) || !pos.IsEmpty(r6) {
+			goto EndCastleOO
+		}
+
+		r4 := RankFile(rank, 4)
+		other := pos.SideToMove.Opposite()
+		if pos.GetAttacker(r4, other) != NoFigure ||
+			pos.GetAttacker(r5, other) != NoFigure ||
+			pos.GetAttacker(r6, other) != NoFigure {
+			goto EndCastleOO
+		}
+
+		*moves = append(*moves, MakeMove(Castling, r4, r6, NoPiece, ColorFigure(pos.SideToMove, King)))
+	}
+EndCastleOO:
+
+	// castle queen side
+	if pos.curr.CastlingAbility&ooo != 0 {
+		r3 := RankFile(rank, 3)
+		r2 := RankFile(rank, 2)
+		r1 := RankFile(rank, 1)
+		if !pos.IsEmpty(r3) || !pos.IsEmpty(r2) || !pos.IsEmpty(r1) {
+			goto EndCastleOOO
+		}
+
+		r4 := RankFile(rank, 4)
+		other := pos.SideToMove.Opposite()
+		if pos.GetAttacker(r4, other) != NoFigure ||
+			pos.GetAttacker(r3, other) != NoFigure ||
+			pos.GetAttacker(r2, other) != NoFigure {
+			goto EndCastleOOO
+		}
+
+		*moves = append(*moves, MakeMove(Castling, r4, r2, NoPiece, ColorFigure(pos.SideToMove, King)))
+	}
+EndCastleOOO:
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// getMask : get mask
+// -> pos *Position : position
+// <- Bitboard : mask
+
+func (pos *Position) getMask(kind int) Bitboard {
+	mask := Bitboard(0)
+	if kind&Violent != 0 {
+		// generate all attacks
+		// promotions are handled specially
+		mask |= pos.ByColor[pos.SideToMove.Opposite()]
+	}
+	if kind&Quiet != 0 {
+		// generate all non-attacks
+		mask |= ^(pos.ByColor[White] | pos.ByColor[Black])
+	}
+	// tactical is handled specially
+	return mask
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// Remove : removes a piece from the table
+// does nothing if pi is NoPiece, does not validate input
+// -> pos *Position : position
+// -> sq Square : square
+// -> pi Piece : piece
+
+func (pos *Position) Remove(sq Square, pi Piece) {
+	if pi != NoPiece {
+		pos.curr.Zobrist ^= zobristPiece[pi][sq]
+		bb := ^sq.Bitboard()
+		pos.ByColor[pi.Color()] &= bb
+		pos.ByFigure[pi.Figure()] &= bb
+	}
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// IsCheckedLocal : is the side in local check
+// only makes a difference in Racing Kings, where reaching the base rank is global check
+// -> pos *Position : position
+// -> side Color : side
+// <- bool : true if checked
+
+func (pos *Position) IsCheckedLocal(side Color) bool {
+	kingSq := pos.ByPiece(side, King).AsSquare()
+	return pos.GetAttacker(kingSq, side.Opposite()) != NoFigure
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// IsChecked : returns true if side's king is checked
+// -> pos *Position : position
+// -> side Color : side
+// <- bool : true if checked
+
+func (pos *Position) IsChecked(side Color) bool {
+	///////////////////////////////////////////////////
+	// NEW
+	// check Racing Kings global checks
+	if Variant == VARIANT_Racing_Kings {
+		onbb := pos.IsOnBaseRank(Black)
+		onbw := pos.IsOnBaseRank(White)
+		if onbb && onbw {
+			// if both kings on base rank, there is no global check
+		} else if (side==White) && onbb {
+			// if black reached the base rank white is always in check
+			return true
+		} else if (side==Black) && onbw {
+			// if white reached the base rank and black is not on base rank, black is in check
+			if !pos.IsOnBaseRank(Black) {
+				return true
+			}
+		}
+		// if no automatic check is true, then return the normal check
+	}
+	// END NEW
+	///////////////////////////////////////////////////
+	return pos.IsCheckedLocal(side)
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// DoMove : executes a legal move
+// -> pos *Position : position
+// -> move Move : move
+
+func (pos *Position) DoMove(move Move) {
+	pos.pushState()
+	curr := pos.curr
+	curr.Move = move
+
+	// Update castling rights.
+	pi := move.Piece()
+	if pi != NoPiece { // nullmove cannot change castling ability
+		pos.SetCastlingAbility(curr.CastlingAbility &^ lostCastleRights[move.From()] &^ lostCastleRights[move.To()])
+	}
+	// update fullmove counter.
+	if pos.SideToMove == Black {
+		pos.fullmoveCounter++
+	}
+	// Update halfmove clock.
+	curr.HalfmoveClock++
+	if pi.Figure() == Pawn || move.Capture() != NoPiece {
+		curr.HalfmoveClock = 0
+	}
+	// Set Enpassant square for capturing.
+	if pi.Figure() == Pawn && move.From().Rank()^move.To().Rank() == 2 {
+		pos.SetEnpassantSquare((move.From() + move.To()) / 2)
+	} else if pos.EnpassantSquare() != SquareA1 {
+		pos.SetEnpassantSquare(SquareA1)
+	}
+	// Move rook on castling.
+	if move.MoveType() == Castling {
+		rook, start, end := CastlingRook(move.To())
+		pos.Remove(start, rook)
+		pos.Put(end, rook)
+	}
+
+	// Update the pieces on the chess board.
+	pos.Remove(move.From(), pi)
+	pos.Remove(move.CaptureSquare(), move.Capture())
+	pos.Put(move.To(), move.Target())
+	pos.SetSideToMove(pos.SideToMove.Opposite())
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GenerateMoves : appends to moves all moves valid from pos
+// the generated moves are pseudo-legal, i.e. they can leave the king in check
+// kind is a combination of Quiet, Tactical or Violent.
+// -> pos *Position : position
+// -> kind int : kind
+// -> moves *[]Move : move list
+
+func (pos *Position) GenerateMoves(kind int, moves *[]Move) {
+	mask := pos.getMask(kind)
+	// Order of the moves is important because the last quiet
+	// moves will be reduced less.  Current order was produced
+	// by testing 20 random orders and picking the best.
+	pos.genKingMovesNear(mask, moves)
+	pos.genPawnDoubleAdvanceMoves(kind, moves)
+	pos.genRookMoves(Rook, mask, moves)
+	pos.genBishopMoves(Queen, mask, moves)
+	pos.genPawnAttackMoves(kind, moves)
+	pos.genPawnAdvanceMoves(kind, moves)
+	pos.genPawnPromotions(kind, moves)
+	pos.genKnightMoves(mask, moves)
+	pos.genBishopMoves(Bishop, mask, moves)
+	pos.genKingCastles(kind, moves)
+	pos.genRookMoves(Queen, mask, moves)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GenerateFigureMoves : generate moves for a given figure
+// the generated moves are pseudo-legal, i.e. they can leave the king in check
+// kind is a combination of Quiet, Tactical or Violent
+// -> pos *Position : position
+// -> fig Figure : figure
+// -> kind int : kind
+// -> moves *[]Move : move list
+
+func (pos *Position) GenerateFigureMoves(fig Figure, kind int, moves *[]Move) {
+	mask := pos.getMask(kind)
+	switch fig {
+	case Pawn:
+		pos.genPawnAdvanceMoves(kind, moves)
+		pos.genPawnAttackMoves(kind, moves)
+		pos.genPawnDoubleAdvanceMoves(kind, moves)
+		pos.genPawnPromotions(kind, moves)
+	case Knight:
+		pos.genKnightMoves(mask, moves)
+	case Bishop:
+		pos.genBishopMoves(Bishop, mask, moves)
+	case Rook:
+		pos.genRookMoves(Rook, mask, moves)
+	case Queen:
+		pos.genBishopMoves(Queen, mask, moves)
+		pos.genRookMoves(Queen, mask, moves)
+	case King:
+		pos.genKingMovesNear(mask, moves)
+		pos.genKingCastles(kind, moves)
+	}
+}
 
 ///////////////////////////////////////////////
 
