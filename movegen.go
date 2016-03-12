@@ -1396,9 +1396,9 @@ func min(a, b int32) int32 {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// initLostCastleRights : initialize lost castle rights
+// init : initialize lost castle rights
 
-func initLostCastleRights() {
+func init() {
 	lostCastleRights[SquareA1] = WhiteOOO
 	lostCastleRights[SquareE1] = WhiteOOO | WhiteOO
 	lostCastleRights[SquareH1] = WhiteOO
@@ -1869,9 +1869,9 @@ func initBbSuperAttack() {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// initAttacks : initialize attacks
+// init : initialize attacks
 
-func initAttacks() {
+func init() {
 	initBbPawnAttack()
 	initBbKnightAttack()
 	initBbKingAttack()
