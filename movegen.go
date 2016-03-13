@@ -720,8 +720,47 @@ func init() {
 	}
 	/*for sq := SquareMinValue ; sq <=SquareMaxValue ; sq ++ {
 		explosionbitboards[sq].Print()
-		fmt.Println()
 	}*/
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetKingBitboard : get the king bitboard for side
+// -> pos *Position : position
+// -> side Color : side
+// <- Bitboard : king bitboard for side
+
+func (pos *Position) GetKingBitboard(side Color) Bitboard {
+	return pos.ByColor[side] & pos.ByFigure[King]
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// KingsAdjacent : determine if kings are on adjacent squares
+// -> pos *Position : position
+// <- bool : true if kings are adjacent
+
+func (pos *Position) KingsAdjacent() bool {
+	wkbb := pos.GetKingBitboard(White)
+	if wkbb == 0 {
+		// white king missing, cannot be adjacent
+		return false
+	}
+	bkbb := pos.GetKingBitboard(Black)
+	if bkbb == 0 {
+		// black king missing, cannot be adjacent
+		return false
+	}
+	// get white king's square
+	wksq := wkbb.Pop()
+	// bitboard for neighbours of white king
+	neighboursbb := explosionbitboards[wksq]
+	if (neighboursbb & bkbb) == 0 {
+		return false
+	}
+	return true
 }
 
 ///////////////////////////////////////////////
@@ -2199,6 +2238,11 @@ func (pos *Position) Get(sq Square) Piece {
 			return ColorFigure(col, fig)
 		}
 	}
+	if IS_Atomic {
+		// TODO : in atomic sometimes square has color but no figure, has to be investigated
+		// NoPiece is returned to avoid panic
+		return NoPiece
+	}
 	panic("unreachable: square has color, but no figure")
 }
 
@@ -2512,6 +2556,9 @@ func (pos *Position) PrintBoard() {
 	/*fmt.Printf("evalw %d evalb %d eval %d bw %v bb %v\n",
 		EvaluateSideRk(pos, White),EvaluateSideRk(pos, Black),Evaluate(pos),
 		pos.IsOnBaseRank(White),pos.IsOnBaseRank(Black))*/
+	/*pos.GetKingBitboard(White).Print()
+	pos.GetKingBitboard(Black).Print()*/
+	//fmt.Printf("kings adjacent %v\n",pos.KingsAdjacent())
 }
 
 ///////////////////////////////////////////////
@@ -2536,6 +2583,7 @@ func (bb Bitboard) Print() {
 		}
 		mask=mask >> 1
 	}
+	fmt.Println()
 }
 
 ///////////////////////////////////////////////
@@ -3036,6 +3084,14 @@ func (pos *Position) UndoMove() {
 		pos.fullmoveCounter--
 	}
 
+	if IS_Atomic && ( pos.curr.NumExplosions > 0 ) {
+		for i := 0 ; i < pos.curr.NumExplosions ; i++ {
+			esq := pos.curr.ExplosionInfo[i].sq
+			epi := pos.curr.ExplosionInfo[i].piece
+			pos.Put(esq, epi)
+		}
+	}
+
 	pos.popState()
 }
 
@@ -3432,8 +3488,29 @@ func (pos *Position) Remove(sq Square, pi Piece) {
 // <- bool : true if checked
 
 func (pos *Position) IsCheckedLocal(side Color) bool {
+	if IS_Atomic {
+		// no check with adjacent kings
+		if pos.KingsAdjacent() {
+			return false
+		}
+	}
 	kingSq := pos.ByPiece(side, King).AsSquare()
 	return pos.GetAttacker(kingSq, side.Opposite()) != NoFigure
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
+// IsExploded : is the king of side exploded
+// -> pos *Position : position
+// -> side Color : side
+// <- bool : true if exploded
+
+func (pos *Position) IsExploded(side Color) bool {
+	if pos.GetKingBitboard(side) == 0 {
+		return true
+	}
+	return false
 }
 
 ///////////////////////////////////////////////////
@@ -3447,6 +3524,18 @@ func (pos *Position) IsCheckedLocal(side Color) bool {
 func (pos *Position) IsChecked(side Color) bool {
 	///////////////////////////////////////////////////
 	// NEW
+	// check Atomic global checks
+	if IS_Atomic {
+		them := side.Opposite()
+		if pos.IsExploded(side) {
+			// if our king exploded, we are in check
+			return true
+		}
+		if pos.IsExploded(them) {
+			// if opponent's king exploded without our king exploding, we are not in check
+			return false
+		}
+	}
 	// check Racing Kings global checks
 	if IS_Racing_Kings {
 		onbb := pos.IsOnBaseRank(Black)
@@ -3513,6 +3602,26 @@ func (pos *Position) DoMove(move Move) {
 	pos.Remove(move.CaptureSquare(), move.Capture())
 	pos.Put(move.To(), move.Target())
 	pos.SetSideToMove(pos.SideToMove.Opposite())
+
+	if IS_Atomic && ( move.Capture() != NoPiece ) {
+		// capturing piece now explodes
+		pos.Remove(move.CaptureSquare(), move.Target())
+		tosq := move.To()
+		toneighbours := explosionsquares[tosq]
+		explcnt := 0
+		for _, nsq := range toneighbours {
+			// explosion may affect castling rights
+			pos.SetCastlingAbility(curr.CastlingAbility &^ lostCastleRights[nsq])
+			npi := pos.Get(nsq)
+			if npi.Figure() != Pawn {
+				pos.curr.ExplosionInfo[explcnt].sq = nsq
+				pos.curr.ExplosionInfo[explcnt].piece = npi
+				pos.Remove(nsq, npi)
+				explcnt++
+			}
+		}
+		pos.curr.NumExplosions = explcnt
+	}
 }
 
 ///////////////////////////////////////////////////
