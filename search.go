@@ -863,11 +863,15 @@ func PrintPieceValues() {
 func SetVariantFlags() {
 	IS_Standard = false
 	IS_Racing_Kings = false
+	IS_Atomic = false
 	if Variant == VARIANT_Standard {
 		IS_Standard = true
 	}
 	if Variant == VARIANT_Racing_Kings {
 		IS_Racing_Kings = true
+	}
+	if Variant == VARIANT_Atomic {
+		IS_Atomic = true
 	}
 }
 

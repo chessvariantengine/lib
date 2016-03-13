@@ -295,12 +295,19 @@ var (
 	lostCastleRights [64]Castle
 )
 
+type explosion struct {
+	sq Square    // square where the exploded piece was
+	piece Piece  // exploded piece
+}
+
 type state struct {
 	Zobrist         uint64    // Zobrist key
 	Move            Move      // last move played
 	HalfmoveClock   int       // last ply when a pawn was moved or a capture was made
 	EnpassantSquare [2]Square // en passant square (polyglot, fen), if none, then SquareA1
 	CastlingAbility Castle    // remaining castling rights
+	ExplosionInfo   [8]explosion  // slice of exploded pieces ( max 8 )
+	NumExplosions   int       // number of explosions
 }
 
 // Position represents the chess board and keeps track of the move history
@@ -652,6 +659,15 @@ var (
 	}
 )
 
+// list of squares
+type squarelist []Square
+
+// keeps track of which squares can be exploded around a square
+// can be used to establish adjacent kings also
+var explosionsquares [SquareArraySize]squarelist
+
+var explosionbitboards [SquareArraySize]Bitboard
+
 // end definitions
 ///////////////////////////////////////////////
 
@@ -680,6 +696,66 @@ func init() {
 	initZobristEnpassant()
 	initZobristCastle()
 	initZobristColor()
+
+	// init explosionsquares
+	for sq := SquareMinValue ; sq <=SquareMaxValue ; sq ++ {
+		var bb Bitboard = 0
+		squares := squarelist{}
+		r := sq.Rank()
+		f := sq.File()
+		for dr := -1 ; dr <= 1 ; dr+=1 {
+			for df := -1 ; df <= 1; df+=1 {
+				er := r + dr
+				ef := f + df
+				if ( ( dr != 0 ) || ( df != 0 ) ) && RankFileOk(er, ef) {
+					esq := RankFile(er, ef)
+					squares = append(squares, esq)
+					sbb := esq.Bitboard()
+					bb = bb | sbb
+				}
+			}
+		}
+		explosionsquares[sq]=squares
+		explosionbitboards[sq]=bb
+	}
+	/*for sq := SquareMinValue ; sq <=SquareMaxValue ; sq ++ {
+		explosionbitboards[sq].Print()
+		fmt.Println()
+	}*/
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// RankOk : check if rank is within the board
+// -> r int : rank
+// <- bool : true if rank is within the board
+
+func RankOk(r int) bool {
+	return (r>=0) && (r<=7)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// FileOk : check if file is within the board
+// -> f int : file
+// <- bool : true if file is within the board
+
+func FileOk(f int) bool {
+	return (f>=0) && (f<=7)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// RankFileOk : check if rank and file are within the board
+// -> f int : file
+// -> r int : rank
+// <- bool : true if file and rank are both within the board
+
+func RankFileOk(r, f int) bool {
+	return RankOk(r) && FileOk(f)
 }
 
 ///////////////////////////////////////////////
@@ -1989,7 +2065,7 @@ func (pos *Position) CastlingAbility() Castle {
 
 ///////////////////////////////////////////////
 // NewPosition : returns a new position
-// <- *Position : 
+// <- *Position : position
 
 func NewPosition() *Position {
 	pos := &Position{
@@ -2436,6 +2512,30 @@ func (pos *Position) PrintBoard() {
 	/*fmt.Printf("evalw %d evalb %d eval %d bw %v bb %v\n",
 		EvaluateSideRk(pos, White),EvaluateSideRk(pos, Black),Evaluate(pos),
 		pos.IsOnBaseRank(White),pos.IsOnBaseRank(Black))*/
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// Print : prints bitboard
+// -> bb Bitboard : position
+
+func (bb Bitboard) Print() {
+	var mask uint64=1 << uint(SquareArraySize-1)
+	buff:=""
+	for i:=0; i<SquareArraySize; i++ {
+		found := (uint64(bb) & mask) != 0
+		if(!found){
+			buff="0"+buff
+		} else {
+			buff="1"+buff
+		}
+		if (i%8) == 7 {
+			fmt.Printf("%s\n",buff)
+			buff=""
+		}
+		mask=mask >> 1
+	}
 }
 
 ///////////////////////////////////////////////
@@ -3381,34 +3481,34 @@ func (pos *Position) DoMove(move Move) {
 	curr := pos.curr
 	curr.Move = move
 
-	// Update castling rights.
+	// update castling rights
 	pi := move.Piece()
 	if pi != NoPiece { // nullmove cannot change castling ability
 		pos.SetCastlingAbility(curr.CastlingAbility &^ lostCastleRights[move.From()] &^ lostCastleRights[move.To()])
 	}
-	// update fullmove counter.
+	// update fullmove counter
 	if pos.SideToMove == Black {
 		pos.fullmoveCounter++
 	}
-	// Update halfmove clock.
+	// update halfmove clock
 	curr.HalfmoveClock++
 	if pi.Figure() == Pawn || move.Capture() != NoPiece {
 		curr.HalfmoveClock = 0
 	}
-	// Set Enpassant square for capturing.
+	// set Enpassant square for capturing
 	if pi.Figure() == Pawn && move.From().Rank()^move.To().Rank() == 2 {
 		pos.SetEnpassantSquare((move.From() + move.To()) / 2)
 	} else if pos.EnpassantSquare() != SquareA1 {
 		pos.SetEnpassantSquare(SquareA1)
 	}
-	// Move rook on castling.
+	// move rook on castling
 	if move.MoveType() == Castling {
 		rook, start, end := CastlingRook(move.To())
 		pos.Remove(start, rook)
 		pos.Put(end, rook)
 	}
 
-	// Update the pieces on the chess board.
+	// update the pieces on the chess board
 	pos.Remove(move.From(), pi)
 	pos.Remove(move.CaptureSquare(), move.Capture())
 	pos.Put(move.To(), move.Target())

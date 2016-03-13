@@ -81,18 +81,21 @@ func Run(variant int, protocol int) {
 const(
 	VARIANT_Standard          = iota             
 	VARIANT_Racing_Kings
+	VARIANT_Atomic
 )
 
 // variant flags
 var(
 	IS_Standard bool          = false
 	IS_Racing_Kings bool      = false
+	IS_Atomic bool            = false
 )
 
 // starting positions for variants
 var START_FENS = [...]string{
 		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 		"8/8/8/8/8/8/krbnNBRK/qrbnNBRQ w - - 0 1",
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 	}
 
 // current variant
@@ -138,6 +141,7 @@ const(
 var VARIANT_TO_NAME=[...]string{
 	"Standard",
 	"Racing Kings",
+	"Atomic",
 }
 
 // names of protocols
@@ -150,11 +154,13 @@ var PROTOCOL_TO_NAME=[...]string{
 var VARIANT_NAME_TO_VARIANT=map[string]int{
 	"Standard": VARIANT_Standard,
 	"Racing Kings": VARIANT_Racing_Kings,
+	"Atomic": VARIANT_Atomic,
 }
 
 var VARIANT_SHORTHAND_NAME_TO_VARIANT=map[string]int{
 	"s": VARIANT_Standard,
 	"rk": VARIANT_Racing_Kings,
+	"a": VARIANT_Atomic,
 }
 
 // variant and protocol to engine name
@@ -166,6 +172,7 @@ type EngineNameIndex struct{
 var VARIANT_AND_PROTOCOL_TO_ENGINE_NAME=map[EngineNameIndex]string{
 	EngineNameIndex{ variant: VARIANT_Standard, protocol: PROTOCOL_UCI }:"zurichess",
 	EngineNameIndex{ variant: VARIANT_Racing_Kings, protocol: PROTOCOL_UCI }:"verkuci",
+	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_UCI }:"venatuci",
 }
 
 // quit application 'error'
@@ -250,6 +257,10 @@ func ExecuteTest() error {
 			return errTestOk
 		case "r":
 			uci.SetVariant(VARIANT_Racing_Kings)
+			uci.PrintBoard()
+			return errTestOk
+		case "a":
+			uci.SetVariant(VARIANT_Atomic)
 			uci.PrintBoard()
 			return errTestOk
 		case "intro":
