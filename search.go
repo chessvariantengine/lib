@@ -2,7 +2,7 @@
 // search.go
 // implements the search
 // zurichess sources: engine.go, material.go, move_ordering.go, pv.go, score.go
-// cache.go, hash_table.go, score_coach.go, see.go, time_control.go
+// cache.go, hash_table.go, score.go, see.go, time_control.go
 //////////////////////////////////////////////////////
 
 package lib
@@ -341,7 +341,214 @@ const (
 	overhead         = 20 * time.Millisecond
 )
 
+const (
+	murmurMultiplier = uint64(0xc6a4a7935bd1e995)
+	murmurShift      = uint(51)
+)
+
+var (
+	murmurSeed = [ColorArraySize]uint64{
+		0x77a166129ab66e91,
+		0x4f4863d5038ea3a3,
+		0xe14ec7e648a4068b,
+	}
+)
+
 // end definitions
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// init : initialization
+
+func init() {
+	// global hash table
+	GlobalHashTable = NewHashTable(DefaultHashTableSizeMB)
+
+	// initialize caches
+	pawnsAndShelterCache = newCache(9, hashPawnsAndShelter, evaluatePawnsAndShelter)
+	initWeights()
+
+	slice := func(w []Score, out []Score) []Score {
+		copy(out, w)
+		return w[len(out):]
+	}
+	entry := func(w []Score, out *Score) []Score {
+		*out = w[0]
+		return w[1:]
+	}
+
+	w := Weights[:]
+	w = slice(w, wFigure[:])
+	w = slice(w, wMobility[:])
+	w = slice(w, wPawn[:])
+	w = slice(w, wPassedPawn[:])
+	w = slice(w, wKingRank[:])
+	w = slice(w, wKingFile[:])
+	w = entry(w, &wConnectedPawn)
+	w = entry(w, &wDoublePawn)
+	w = entry(w, &wIsolatedPawn)
+	w = entry(w, &wPawnThreat)
+	w = entry(w, &wKingShelter)
+	w = entry(w, &wBishopPair)
+	w = entry(w, &wRookOnOpenFile)
+	w = entry(w, &wRookOnHalfOpenFile)
+
+	if len(w) != 0 {
+		panic(fmt.Sprintf("not all weights used, left with %d out of %d", len(w), len(Weights)))
+	}
+}
+
+///////////////////////////////////////////////
+// murmuxMix : mixes two integers k&h
+// murmurMix is based on MurmurHash2 https://sites.google.com/site/murmurhash/
+// which is on public domain
+// a hash can be constructed like this:
+//     hash := murmurSeed[us]
+//     hash = murmurMix(hash, n1)
+//     hash = murmurMix(hash, n2)
+//     hash = murmurMix(hash, n3)
+// -> k unint64 : k
+// -> h unint64 : h
+// <- uint64 : h
+
+func murmurMix(k, h uint64) uint64 {
+	h ^= k
+	h *= murmurMultiplier
+	h ^= h >> murmurShift
+	return h
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// hashPawnsAndShelter : has pawn and shelter
+// -> pos *Position : position
+// -> us Color : color
+// <- uint64 : h
+
+func hashPawnsAndShelter(pos *Position, us Color) uint64 {
+	h := murmurSeed[us]
+	h = murmurMix(h, uint64(pos.ByPiece(us, Pawn)))
+	h = murmurMix(h, uint64(pos.ByPiece(us.Opposite(), Pawn)))
+	h = murmurMix(h, uint64(pos.ByPiece(us, King)))
+	if pos.ByPiece(us.Opposite(), Queen) != 0 {
+		// Mixes in something to signal queen's presence.
+		h = murmurMix(h, murmurSeed[NoColor])
+	}
+	return h
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// evaluatePawns : evaluate pawns
+// -> pos *Position : position
+// -> us Color : color
+// <- Eval : eval
+
+func evaluatePawns(pos *Position, us Color) Eval {
+	var eval Eval
+	ours := pos.ByPiece(us, Pawn)
+	theirs := pos.ByPiece(us.Opposite(), Pawn)
+
+	// from white's POV (P - white pawn, p - black pawn)
+	// block   wings
+	// ....... .....
+	// .....P. .....
+	// .....x. .....
+	// ..p..x. .....
+	// .xxx.x. .xPx.
+	// .xxx.x. .....
+	// .xxx.x. .....
+	// .xxx.x. .....
+	block := East(theirs) | theirs | West(theirs)
+	wings := East(ours) | West(ours)
+	double := Bitboard(0)
+	if us == White {
+		block = SouthSpan(block) | SouthSpan(ours)
+		double = ours & South(ours)
+	} else /* if us == Black */ {
+		block = NorthSpan(block) | NorthSpan(ours)
+		double = ours & North(ours)
+	}
+
+	isolated := ours &^ Fill(wings)                           // no pawn on the adjacent files
+	connected := ours & (North(wings) | wings | South(wings)) // has neighbouring pawns
+	passed := ours &^ block                                   // no pawn env front and no enemy on the adjacent files
+
+	for bb := ours; bb != 0; {
+		sq := bb.Pop()
+		povSq := sq.POV(us)
+		rank := povSq.Rank()
+
+		eval.Add(wFigure[Pawn])
+		eval.Add(wPawn[povSq-8])
+
+		if passed.Has(sq) {
+			eval.Add(wPassedPawn[rank])
+		}
+		if connected.Has(sq) {
+			eval.Add(wConnectedPawn)
+		}
+		if double.Has(sq) {
+			eval.Add(wDoublePawn)
+		}
+		if isolated.Has(sq) {
+			eval.Add(wIsolatedPawn)
+		}
+	}
+
+	return eval
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// evaluateShelter : evaluate shelter
+// -> pos *Position : position
+// -> us Color : color
+// <- Eval : eval
+
+func evaluateShelter(pos *Position, us Color) Eval {
+	var eval Eval
+	pawns := pos.ByPiece(us, Pawn)
+	king := pos.ByPiece(us, King)
+
+	sq := king.AsSquare().POV(us)
+	eval.Add(wKingFile[sq.File()])
+	eval.Add(wKingRank[sq.Rank()])
+
+	if pos.ByPiece(us.Opposite(), Queen) != 0 {
+		king = ForwardSpan(us, king)
+		file := sq.File()
+		if file > 0 && West(king)&pawns == 0 {
+			eval.Add(wKingShelter)
+		}
+		if king&pawns == 0 {
+			eval.AddN(wKingShelter, 2)
+		}
+		if file < 7 && East(king)&pawns == 0 {
+			eval.Add(wKingShelter)
+		}
+	}
+	return eval
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// evaluatePawnsAndShelter : evaluate pawn and shelter
+// -> pos *Position : position
+// -> us Color : color
+// <- Eval : eval
+
+func evaluatePawnsAndShelter(pos *Position, us Color) Eval {
+	var eval Eval
+	eval.Merge(evaluatePawns(pos, us))
+	eval.Merge(evaluateShelter(pos, us))
+	return eval
+}
+
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
@@ -640,11 +847,27 @@ func FigureNameToFigure(figureString string) Figure {
 // PrintPieceValues : prints piece values
 
 func PrintPieceValues() {
-	if Variant == VARIANT_Racing_Kings {
+	if IS_Racing_Kings {
 		for i:=Knight; i<King ; i++ {
 			fmt.Printf("%s %d\n",FigureToName[i],RK_PIECE_VALUES[i])
 		}
 		fmt.Printf("King Advance %d\n",KING_ADVANCE_VALUE)
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// SetVariantFlags : set variant flags
+
+func SetVariantFlags() {
+	IS_Standard = false
+	IS_Racing_Kings = false
+	if Variant == VARIANT_Standard {
+		IS_Standard = true
+	}
+	if Variant == VARIANT_Racing_Kings {
+		IS_Racing_Kings = true
 	}
 }
 
@@ -660,6 +883,7 @@ func (eng *Engine) SetVariant(setVariant int) {
 		setVariant=Variant
 	}
 	Variant=setVariant
+	SetVariantFlags()
 	pos, _ := PositionFromFEN(START_FENS[Variant])
 	eng.SetPosition(pos)
 }
@@ -778,6 +1002,7 @@ func (e *Eval) Neg() {
 
 func initWeights() {
 }
+
 
 ///////////////////////////////////////////////
 
@@ -973,7 +1198,7 @@ func Phase(pos *Position) int32 {
 func Evaluate(pos *Position) int32 {
 	///////////////////////////////////////////////////
 	// NEW
-	if Variant == VARIANT_Racing_Kings {
+	if IS_Racing_Kings {
 		evalw := EvaluateSideRk(pos, White)
 		evalb := EvaluateSideRk(pos, Black)
 
@@ -1027,7 +1252,7 @@ func (eng *Engine) ply() int32 {
 func (pos *Position) InsufficientMaterial() bool {
 	///////////////////////////////////////////////////
 	// NEW
-	if Variant == VARIANT_Racing_Kings {
+	if IS_Racing_Kings {
 		if pos.IsOnBaseRank(White) && pos.IsOnBaseRank(Black) {
 			// Both kings on base rank is draw.
 			return true
@@ -1230,15 +1455,6 @@ func (ht *HashTable) Clear() {
 	for i := range ht.table {
 		ht.table[i] = hashEntry{}
 	}
-}
-
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-// init : init global hash table
-
-func init() {
-	GlobalHashTable = NewHashTable(DefaultHashTableSizeMB)
 }
 
 ///////////////////////////////////////////////
@@ -1791,7 +2007,7 @@ func (eng *Engine) searchQuiescence(α, β int32) int32 {
 		///////////////////////////////////////////////////
 		// NEW
 		// in Racing Kings avoid captures that give check
-		if Variant == VARIANT_Racing_Kings {
+		if IS_Racing_Kings {
 			if eng.Position.IsCheckedLocal(us.Opposite()) {
 				eng.UndoMove()
 				continue
@@ -2215,7 +2431,7 @@ func (eng *Engine) searchTree(α, β, depth int32) int32 {
 		///////////////////////////////////////////////////
 		// NEW
 		// in Racing Kings skip moves that give check
-		if Variant == VARIANT_Racing_Kings {
+		if IS_Racing_Kings {
 			if pos.IsCheckedLocal(us.Opposite()) {
 				eng.UndoMove()
 				continue
@@ -2424,3 +2640,5 @@ func (eng *Engine) Play(tc *TimeControl) (moves []Move) {
 	eng.Log.EndSearch()
 	return moves
 }
+
+///////////////////////////////////////////////
