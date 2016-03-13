@@ -3064,14 +3064,26 @@ func (pos *Position) UndoMove() {
 	move := pos.LastMove()
 	pos.SetSideToMove(pos.SideToMove.Opposite())
 	// CastlingAbility and EnpassantSquare are restored by pos.popState()
-	// pos.SetCastlingAbility(pos.prev().CastlingAbility)
-	// pos.SetEnpassantSquare(pos.prev().EnpassantSquare[1])
+	pos.SetCastlingAbility(pos.prev().CastlingAbility)
+	pos.SetEnpassantSquare(pos.prev().EnpassantSquare[1])
 
 	// modify the chess board
 	pi := move.Piece()
 	pos.Put(move.From(), pi)
-	pos.Remove(move.To(), move.Target())
+	if IS_Atomic && ( pos.curr.NumExplosions > 0 ) {
+		// if there was an atomic capture the piece was already removed by explosion
+	} else {
+		pos.Remove(move.To(), move.Target())
+	}
 	pos.Put(move.CaptureSquare(), move.Capture())
+
+	if IS_Atomic && ( pos.curr.NumExplosions > 0 ) {
+		for i := 0 ; i < pos.curr.NumExplosions ; i++ {
+			esq := pos.curr.ExplosionInfo[i].sq
+			epi := pos.curr.ExplosionInfo[i].piece
+			pos.Put(esq, epi)
+		}
+	}
 
 	// move rook on castling
 	if move.MoveType() == Castling {
@@ -3082,14 +3094,6 @@ func (pos *Position) UndoMove() {
 
 	if pos.SideToMove == Black {
 		pos.fullmoveCounter--
-	}
-
-	if IS_Atomic && ( pos.curr.NumExplosions > 0 ) {
-		for i := 0 ; i < pos.curr.NumExplosions ; i++ {
-			esq := pos.curr.ExplosionInfo[i].sq
-			epi := pos.curr.ExplosionInfo[i].piece
-			pos.Put(esq, epi)
-		}
 	}
 
 	pos.popState()
@@ -3601,11 +3605,12 @@ func (pos *Position) DoMove(move Move) {
 	pos.Remove(move.From(), pi)
 	pos.Remove(move.CaptureSquare(), move.Capture())
 	pos.Put(move.To(), move.Target())
-	pos.SetSideToMove(pos.SideToMove.Opposite())
 
-	if IS_Atomic && ( move.Capture() != NoPiece ) {
+	curr.NumExplosions = 0
+
+	if IS_Atomic && ( pi != NoPiece ) && ( move.Capture() != NoPiece ) {
 		// capturing piece now explodes
-		pos.Remove(move.CaptureSquare(), move.Target())
+		pos.Remove(move.To(), move.Target())
 		tosq := move.To()
 		toneighbours := explosionsquares[tosq]
 		explcnt := 0
@@ -3613,15 +3618,17 @@ func (pos *Position) DoMove(move Move) {
 			// explosion may affect castling rights
 			pos.SetCastlingAbility(curr.CastlingAbility &^ lostCastleRights[nsq])
 			npi := pos.Get(nsq)
-			if npi.Figure() != Pawn {
-				pos.curr.ExplosionInfo[explcnt].sq = nsq
-				pos.curr.ExplosionInfo[explcnt].piece = npi
+			if ( npi != NoPiece ) && ( npi.Figure() != Pawn ) {
+				curr.ExplosionInfo[explcnt].sq = nsq
+				curr.ExplosionInfo[explcnt].piece = npi
 				pos.Remove(nsq, npi)
 				explcnt++
 			}
 		}
 		pos.curr.NumExplosions = explcnt
 	}
+
+	pos.SetSideToMove(pos.SideToMove.Opposite())
 }
 
 ///////////////////////////////////////////////////

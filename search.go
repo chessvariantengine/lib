@@ -1968,6 +1968,12 @@ func see(pos *Position, m Move) int32 {
 // <- int32 : score
 
 func (eng *Engine) searchQuiescence(α, β int32) int32 {
+
+	if IS_Atomic {
+		// quiescence problematic in atomic because of captures cause explosions
+		return eng.Score()
+	}
+
 	eng.Stats.Nodes++
 	if score, done := eng.endPosition(); done {
 		return score
