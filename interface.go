@@ -42,6 +42,8 @@ func Run(variant int, protocol int) {
 	// set current protocol
 	Protocol = protocol
 
+	ClearLog()
+
 	// create uci
 	uci = NewUCI()
 
@@ -173,6 +175,7 @@ var VARIANT_AND_PROTOCOL_TO_ENGINE_NAME=map[EngineNameIndex]string{
 	EngineNameIndex{ variant: VARIANT_Standard, protocol: PROTOCOL_UCI }:"zurichess",
 	EngineNameIndex{ variant: VARIANT_Racing_Kings, protocol: PROTOCOL_UCI }:"verkuci",
 	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_UCI }:"venatuci",
+	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_XBOARD }:"venatxboard",
 }
 
 // quit application 'error'
@@ -210,11 +213,46 @@ var MakeAnalyzedMove bool = false
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// ClearLog : create an empty log.txt file
+
+func ClearLog() {
+f,err:=os.Create("log.txt")
+	if err!=nil {
+		panic(err)
+	} else {
+		f.Close()
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// Log : append string to log.txt
+// -> what string : string to be appended
+
+func Log(what string) {
+	f,err:=os.OpenFile("log.txt",os.O_CREATE|os.O_APPEND|os.O_WRONLY,0666)
+	if err!=nil {
+	    panic(err)
+	}
+
+	defer f.Close()
+
+	if _,err=f.WriteString(what); err!=nil {
+	    panic(err)
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // ExecuteLine : execute command line
 // <- error : error
 
 func ExecuteLine(setline string) error {
 	line = strings.TrimSpace(setline)
+	// print command line to log
+	Log(fmt.Sprintf("%s\n",line))
 	args = strings.Fields(line)
 	var err error = nil
 	if len(args)>0 {
@@ -339,6 +377,11 @@ func ExecuteUci() error {
 // <- error : error
 
 func ExecuteXboard() error {
+	switch command {
+	case "xboard":
+		Printu("feature setboard=1 myname=\"venatxboard by Alexandru Mosoi\" done=1\n")
+		return nil
+	}
 	return nil
 }
 
