@@ -31,7 +31,7 @@ var RK_PIECE_VALUES = []int32{
 var KING_ADVANCE_VALUE int32    = 250
 var KNIGHT_ADVANCE_VALUE int32  = 5
 
-var ATOMIC_PAWN_BONUS           = 125
+var ATOMIC_PAWN_BONUS           = 150
 
 var ATOMIC_PAWN_BONUS_SCORE     = Score{ M: int32(ATOMIC_PAWN_BONUS*128) , E: int32(ATOMIC_PAWN_BONUS*128) }
 
@@ -988,6 +988,14 @@ func (e *Eval) Add(s Score) {
 // -> n int32 : times score to be added
 
 func (e *Eval) AddN(s Score, n int32) {
+	///////////////////////////////////////////////
+	// NEW
+	// in atomic increase mobility score
+	if IS_Atomic {
+		n = n * 10
+	}
+	// END NEW
+	///////////////////////////////////////////////
 	e.M += s.M * n
 	e.E += s.E * n
 }
