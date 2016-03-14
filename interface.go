@@ -51,7 +51,9 @@ func Run(variant int, protocol int) {
 	uci.SetVariant(VARIANT_CURRENT)
 
 	// print introduction
-	Printu(Intro())
+	if Protocol == PROTOCOL_UCI {
+		Printu(Intro())
+	}
 
 	// set up logging
 	log.SetOutput(os.Stdout)
@@ -78,6 +80,28 @@ func Run(variant int, protocol int) {
 
 ///////////////////////////////////////////////
 // definitions
+
+// enumeration of XBOARD states
+const(
+	XBOARD_Initial_State      = iota
+	XBOARD_Observing
+	XBOARD_Analyzing
+	XBOARD_Analysis_Complete
+	XBOARD_Waiting
+	XBOARD_Thinking
+	XBOARD_Pondering
+	XBOARD_Ponder_Complete
+)
+
+// XBOARD state
+// https://chessprogramming.wikispaces.com/Chess+Engine+Communication+Protocol
+var XBOARD_State              = XBOARD_Initial_State
+
+// XBOARD side which the engine has to play
+var XBOARD_Engine_Side        = Black
+
+// XBOARD post mode
+var XBOARD_Post               = true
 
 // enumeration of variants
 const(
@@ -377,14 +401,348 @@ func ExecuteUci() error {
 // <- error : error
 
 func ExecuteXboard() error {
+	// state independent commands
 	switch command {
-	case "xboard":
-		Printu("feature setboard=1 myname=\"venatxboard by Alexandru Mosoi\" done=1\n")
+	case "quit":
+		// quit applies to all XBOARD states
+		return errQuit
+	case "post":
+		return uci.XBOARD_post()
+	case "nopost":
+		return uci.XBOARD_nopost()
+	case "undo":
+		err := uci.XBOARD_undo()
+		if err != nil {
+			return err
+		}
 		return nil
+	case "setboard":
+		return uci.XBOARD_setboard()
+	case "analyze":
+		err := uci.XBOARD_analyze()
+		if err != nil {
+			return err
+		}
+		XBOARD_State = XBOARD_Analyzing
+		return nil
+	}
+	switch XBOARD_State {
+	case XBOARD_Initial_State:
+		switch command {
+		case "xboard":
+			Printu("feature myname=\"venatxboard by Alexandru Mosoi\""+
+			" setboard=1 usermove=1 playother=1 done=1\n")
+			XBOARD_State = XBOARD_Observing
+			return nil
+		}
+	case XBOARD_Observing:
+		switch command {
+		case "usermove":
+			err := uci.XBOARD_usermove()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Observing
+			return nil
+		case "new":
+			err := uci.XBOARD_new()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Waiting
+			return nil
+		case "go":
+			err := uci.XBOARD_go()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Thinking
+			return nil
+		case "playother":
+			err := uci.XBOARD_playother()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Pondering
+			return nil
+		}
+	case XBOARD_Analyzing:
+		switch command {
+		case "usermove":
+			err := uci.XBOARD_usermove()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Analyzing
+			return nil
+		case "exit":
+			err := uci.XBOARD_exit()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Observing
+			return nil
+		}
+	case XBOARD_Analysis_Complete:
+		switch command {
+		case "exit":
+			err := uci.XBOARD_exit()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Observing
+			return nil
+		}
+	case XBOARD_Waiting:
+		switch command {
+		case "usermove":
+			err := uci.XBOARD_usermove()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Thinking
+			return nil
+		}
+	case XBOARD_Thinking:
+		// if engine sends the 'move' command
+		// state should change to XBOARD_Pondering
+		switch command {
+		case "force":
+			err := uci.XBOARD_force()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Observing
+			return nil
+		}
+	case XBOARD_Pondering:
+		switch command {
+		case "usermove":
+			err := uci.XBOARD_usermove()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Thinking
+			return nil
+		}
+	case XBOARD_Ponder_Complete:
+		switch command {
+		case "usermove":
+			err := uci.XBOARD_usermove()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Thinking
+			return nil
+		}
 	}
 	return nil
 }
 
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD commands
+
+///////////////////////////////////////////////
+// XBOARD_Check_Analyze : check if analysis should start upon changing the position
+
+func XBOARD_Check_Analyze() {
+	// start analyzing move
+	if XBOARD_State == XBOARD_Analyzing {
+		Log("check analyze success\n")
+		predicted := uci.predicted == uci.Engine.Position.Zobrist()
+		uci.timeControl = NewTimeControl(uci.Engine.Position, predicted)
+		uci.timeControl.MovesToGo = 30 // in case there is not time refresh
+		ponder := false
+
+		if ponder {
+		// ponder was requested, so fill the channel
+		// next write to uci.ponder will block
+		uci.ponder <- struct{}{}
+		}
+
+		uci.timeControl.Start(ponder)
+		uci.ready <- struct{}{}
+
+		Log("starting analysis\n")
+		go uci.play()
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_usermove : XBOARD usermove command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_usermove() error {
+	Log(fmt.Sprintf("received usermove command with %d args\n",numargs))
+	if numargs != 1 {
+		return fmt.Errorf("wrong number of arguments for usermove")
+	}
+	// stop any ongoing analysis
+	Log("stopping engine\n")
+	uci.stop("")
+	Log("engine stopped, checking move\n")
+	// make move if legal
+	if move, err := uci.Engine.Position.UCIToMove(args[0]); err != nil {
+		return err
+	} else {
+		Log("making move\n")
+		uci.Engine.DoMove(move)
+	}
+	Log("move made, check analyze\n")
+	XBOARD_Check_Analyze()
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_new : XBOARD new command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_new() error {
+	// reset board to the start position
+	uci.SetVariant(VARIANT_CURRENT)
+	XBOARD_Engine_Side = Black
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_analyze : XBOARD analyze command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_analyze() error {
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_go : XBOARD go command
+// switch engine to play side currently on move
+// see: https://www.gnu.org/software/xboard/engine-intf.html
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_go() error {
+	turn := uci.Engine.Position.SideToMove
+	XBOARD_Engine_Side = turn
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_playother : XBOARD playother command
+// enabled by the feature command
+// https://www.gnu.org/software/xboard/engine-intf.html
+// "(This command is new in protocol version 2. It is not sent unless you enable it with the feature command.)
+// Leave force mode and set the engine to play the color that is not on move.
+// Associate the opponent's clock with the color that is on move, the engine's clock with the color that is not on move.
+// Start the opponent's clock. If pondering is enabled, the engine should begin pondering.
+// If the engine later receives a move, it should start thinking and eventually reply."
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_playother() error {
+	turn := uci.Engine.Position.SideToMove
+	XBOARD_Engine_Side = turn.Opposite()
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_exit : XBOARD exit command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_exit() error {
+	// stop any ongoing analysis
+	uci.stop("")
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_force : XBOARD force command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_force() error {
+	XBOARD_Engine_Side = NoColor
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_undo : XBOARD undo command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_undo() error {
+	// stop any ongoing analysis
+	uci.stop("")
+	// unde move
+	uci.UndoMove(line)
+	XBOARD_Check_Analyze()
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_post : XBOARD post command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_post() error {
+	XBOARD_Post = true
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_nopost : XBOARD nopost command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_nopost() error {
+	XBOARD_Post = false
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_setboard : XBOARD setboard command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_setboard() error {
+	fen := GetRest()
+	pos, err := PositionFromFEN(fen)
+	if err != nil {
+		return err
+	}
+	uci.Engine.SetPosition(pos)
+	return nil
+}
+
+///////////////////////////////////////////////
+
+// END XBOARD commands
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
@@ -482,6 +840,32 @@ func (ul *uciLogger) EndSearch() {
 // -> pv []Move : pv
 
 func (ul *uciLogger) PrintPV(stats Stats, score int32, pv []Move) {
+	if Protocol == PROTOCOL_XBOARD {
+		XBOARD_now := time.Now()
+		XBOARD_elapsed := uint64(maxDuration(XBOARD_now.Sub(ul.start), time.Microsecond))
+		// XBOARD_nps := stats.Nodes * uint64(time.Second) / XBOARD_elapsed
+		XBOARD_millis := XBOARD_elapsed / uint64(time.Millisecond)
+		XBOARD_centis := XBOARD_millis * 10
+		XBOARD_score := score
+		if score > KnownWinScore {
+			XBOARD_score = 100000 + (MateScore-score+1)/2
+		} else if score < KnownLossScore {
+			XBOARD_score = -100000 - (MatedScore-score)/2
+		}
+		buff := fmt.Sprintf("%d %d %d %d",
+			stats.Depth,
+			XBOARD_score,
+			XBOARD_centis,
+			stats.Nodes)
+		for _, m := range pv {
+			buff += fmt.Sprintf(" %v", m.UCI())
+		}
+		buff += "\n"
+		fmt.Fprintf(ul.buf, buff)
+		ul.flush()
+		Log(buff)
+		return
+	}
 	// write depth
 	now := time.Now()
 	fmt.Fprintf(ul.buf, "info depth %d seldepth %d ", stats.Depth, stats.SelDepth)
@@ -651,12 +1035,17 @@ func (uci *UCI) MakeSanMove(line string) error {
 
 func (uci *UCI) UndoMove(line string) error {
 	if uci.Engine.Position.GetNoStates()<2 {
+		if Protocol == PROTOCOL_XBOARD {
+			return nil
+		}
 		res:=fmt.Errorf("no move to delete")
 		fmt.Println(res)
 		return res
 	}
 	uci.Engine.UndoMove()
-	uci.PrintBoard()
+	if Protocol == PROTOCOL_UCI {
+		uci.PrintBoard()
+	}
 	return nil
 }
 
@@ -889,19 +1278,21 @@ func (uci *UCI) play() {
 	uci.ponder <- struct{}{}
 	<-uci.ponder
 
-	if len(moves) == 0 {
-		fmt.Printf("bestmove (none)\n")
-	} else if len(moves) == 1 {
-		fmt.Printf("bestmove %v\n", moves[0].UCI())
-	} else {
-		fmt.Printf("bestmove %v ponder %v\n", moves[0].UCI(), moves[1].UCI())
-	}
+	if Protocol == PROTOCOL_UCI {
+		if len(moves) == 0 {
+			fmt.Printf("bestmove (none)\n")
+		} else if len(moves) == 1 {
+			fmt.Printf("bestmove %v\n", moves[0].UCI())
+		} else {
+			fmt.Printf("bestmove %v ponder %v\n", moves[0].UCI(), moves[1].UCI())
+		}
 
-	if len(moves) > 0 {
-		if MakeAnalyzedMove {
-			uci.Engine.DoMove(moves[0])
-			uci.PrintBoard()
-			MakeAnalyzedMove = false
+		if len(moves) > 0 {
+			if MakeAnalyzedMove {
+				uci.Engine.DoMove(moves[0])
+				uci.PrintBoard()
+				MakeAnalyzedMove = false
+			}
 		}
 	}
 
