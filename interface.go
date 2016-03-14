@@ -204,6 +204,8 @@ type UCI struct {
 	predicted uint64
 }
 
+var MakeAnalyzedMove bool = false
+
 // end definitions
 ///////////////////////////////////////////////
 
@@ -246,12 +248,18 @@ func ExecuteLine(setline string) error {
 // <- error : error
 
 func ExecuteTest() error {
+	if line == "m" {
+		MakeAnalyzedMove = true
+		return ExecuteLine("stop")
+	}
 	switch command {
 		case "x": return errQuit
 		case "p":
 			uci.PrintBoard()
 			return errTestOk
 		case "s":
+			return ExecuteLine("stop")
+		case "t":
 			uci.SetVariant(VARIANT_Standard)
 			uci.PrintBoard()
 			return errTestOk
@@ -846,6 +854,14 @@ func (uci *UCI) play() {
 		fmt.Printf("bestmove %v ponder %v\n", moves[0].UCI(), moves[1].UCI())
 	}
 
+	if len(moves) > 0 {
+		if MakeAnalyzedMove {
+			uci.Engine.DoMove(moves[0])
+			uci.PrintBoard()
+			MakeAnalyzedMove = false
+		}
+	}
+
 	// marks the engine as ready
 	// if the engine is made ready before best move is shown
 	// then sometimes (at very high rate of commands position / go)
@@ -946,13 +962,4 @@ func (uci *UCI) SetVariant(setVariant int) error {
 	return nil
 }
 
-///////////////////////////////////////////////
-
-///////////////////////////////////////////////
-///////////////////////////////////////////////
-///////////////////////////////////////////////
-///////////////////////////////////////////////
-///////////////////////////////////////////////
-///////////////////////////////////////////////
-///////////////////////////////////////////////
 ///////////////////////////////////////////////

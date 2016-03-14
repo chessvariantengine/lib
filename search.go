@@ -28,8 +28,12 @@ var RK_PIECE_VALUES = []int32{
 	700,
 }
 
-var KING_ADVANCE_VALUE int32 = 250
-var KNIGHT_ADVANCE_VALUE int32 = 5
+var KING_ADVANCE_VALUE int32    = 250
+var KNIGHT_ADVANCE_VALUE int32  = 5
+
+var ATOMIC_PAWN_BONUS           = 125
+
+var ATOMIC_PAWN_BONUS_SCORE     = Score{ M: int32(ATOMIC_PAWN_BONUS*128) , E: int32(ATOMIC_PAWN_BONUS*128) }
 
 const (
 	KnownWinScore  int32 = 25000000       // KnownWinScore is strictly greater than all evaluation scores (mate not included).
@@ -1106,6 +1110,14 @@ func evaluateSide(pos *Position, us Color, eval *Eval) {
 	mobility = pos.PawnThreats(us) & pos.ByColor[us.Opposite()]
 	eval.AddN(wPawnThreat, mobility.Count())
 
+	if IS_Atomic {
+		// in atomic add bonus for pawns
+		for bb := pos.ByPiece(us, Pawn); bb > 0; {
+			bb.Pop()
+			eval.Add(ATOMIC_PAWN_BONUS_SCORE)
+		}
+	}
+
 	// Knight
 	excl := pos.ByPiece(us, Pawn) | pos.PawnThreats(them)
 	for bb := pos.ByPiece(us, Knight); bb > 0; {
@@ -1132,7 +1144,7 @@ func evaluateSide(pos *Position, us Color, eval *Eval) {
 		mobility := RookMobility(sq, all) &^ excl
 		eval.AddN(wMobility[Rook], mobility.Count())
 
-		// Evaluate rook on open and semi open files.
+		// evaluate rook on open and semi open files
 		// https://chessprogramming.wikispaces.com/Rook+on+Open+File
 		f := FileBb(sq.File())
 		if pos.ByPiece(us, Pawn)&f == 0 {
