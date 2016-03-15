@@ -137,6 +137,7 @@ const(
 	VARIANT_Standard          = iota             
 	VARIANT_Racing_Kings
 	VARIANT_Atomic
+	VARIANT_Horde
 )
 
 // variant flags
@@ -144,13 +145,21 @@ var(
 	IS_Standard bool          = false
 	IS_Racing_Kings bool      = false
 	IS_Atomic bool            = false
+	IS_Horde bool             = false
 )
+
+// side having only pawns in horde
+var HORDE_Pawns_Side          = White
+
+// side having normal pieces in horde
+var HORDE_Pieces_Side         = HORDE_Pawns_Side.Opposite()
 
 // starting positions for variants
 var START_FENS = [...]string{
 		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 		"8/8/8/8/8/8/krbnNBRK/qrbnNBRQ w - - 0 1",
 		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"rnbqkbnr/pppppppp/8/1PP2PP1/PPPPPPPP/PPPPPPPP/PPPPPPPP/PPPPPPPP w kq - 0 1",
 	}
 
 // current variant
@@ -197,6 +206,7 @@ var VARIANT_TO_NAME=[...]string{
 	"Standard",
 	"Racing Kings",
 	"Atomic",
+	"Horde",
 }
 
 // names of protocols
@@ -210,12 +220,14 @@ var VARIANT_NAME_TO_VARIANT=map[string]int{
 	"Standard": VARIANT_Standard,
 	"Racing Kings": VARIANT_Racing_Kings,
 	"Atomic": VARIANT_Atomic,
+	"Horde": VARIANT_Horde,
 }
 
 var VARIANT_SHORTHAND_NAME_TO_VARIANT=map[string]int{
 	"s": VARIANT_Standard,
 	"rk": VARIANT_Racing_Kings,
 	"a": VARIANT_Atomic,
+	"h": VARIANT_Horde,
 }
 
 // variant and protocol to engine name
@@ -229,6 +241,7 @@ var VARIANT_AND_PROTOCOL_TO_ENGINE_NAME=map[EngineNameIndex]string{
 	EngineNameIndex{ variant: VARIANT_Racing_Kings, protocol: PROTOCOL_UCI }:"verkuci",
 	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_UCI }:"venatuci",
 	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_XBOARD }:"venatxboard",
+	EngineNameIndex{ variant: VARIANT_Horde, protocol: PROTOCOL_UCI }:"vehotuci",
 }
 
 // quit application 'error'
@@ -360,6 +373,10 @@ func ExecuteTest() error {
 			return errTestOk
 		case "a":
 			uci.SetVariant(VARIANT_Atomic)
+			uci.PrintBoard()
+			return errTestOk
+		case "h":
+			uci.SetVariant(VARIANT_Horde)
 			uci.PrintBoard()
 			return errTestOk
 		case "intro":

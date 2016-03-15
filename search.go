@@ -19,6 +19,7 @@ import(
 ///////////////////////////////////////////////
 // definitions
 
+// racing kings piece values
 var RK_PIECE_VALUES = []int32{
 	0,
 	0,
@@ -28,12 +29,23 @@ var RK_PIECE_VALUES = []int32{
 	700,
 }
 
+// king advance value for racing kings
 var KING_ADVANCE_VALUE int32    = 250
+
+// knight advance value for racing kings
 var KNIGHT_ADVANCE_VALUE int32  = 5
 
+// atomic pawn bonus
 var ATOMIC_PAWN_BONUS           = 150
 
+// atomic pawn bonus score
 var ATOMIC_PAWN_BONUS_SCORE     = Score{ M: int32(ATOMIC_PAWN_BONUS*128) , E: int32(ATOMIC_PAWN_BONUS*128) }
+
+// horde pawn scores
+var HORDE_PAWN_SCORES [ColorArraySize]Score
+
+// balance material inequality in horde
+var HORDE_BALANCE_SCORE         = Score{ M: int32(1100*128) , E: int32(1100*128) }
 
 const (
 	KnownWinScore  int32 = 25000000       // KnownWinScore is strictly greater than all evaluation scores (mate not included).
@@ -365,6 +377,10 @@ var (
 // init : initialization
 
 func init() {
+	// horde pawn scores
+	HORDE_PAWN_SCORES[HORDE_Pawns_Side]  = Score{ M: int32(100*128) , E: int32(100*128) }
+	HORDE_PAWN_SCORES[HORDE_Pieces_Side] = Score{ M: int32(100*128) , E: int32(100*128) }
+
 	// global hash table
 	GlobalHashTable = NewHashTable(DefaultHashTableSizeMB)
 
@@ -868,6 +884,7 @@ func SetVariantFlags() {
 	IS_Standard = false
 	IS_Racing_Kings = false
 	IS_Atomic = false
+	IS_Horde = false
 	if Variant == VARIANT_Standard {
 		IS_Standard = true
 	}
@@ -876,6 +893,9 @@ func SetVariantFlags() {
 	}
 	if Variant == VARIANT_Atomic {
 		IS_Atomic = true
+	}
+	if Variant == VARIANT_Horde {
+		IS_Horde = true
 	}
 }
 
@@ -1108,7 +1128,20 @@ func ScaleToCentiPawn(score int32) int32 {
 // -> eval *Eval : eval
 
 func evaluateSide(pos *Position, us Color, eval *Eval) {
-	eval.Merge(pawnsAndShelterCache.load(pos, us))
+	if !IS_Horde {
+		// in horde ignore this and use simply the pawn material
+		eval.Merge(pawnsAndShelterCache.load(pos, us))
+	} else {
+		// calculate pawn material for horde
+		for bb := pos.ByPiece(us, Pawn); bb > 0; {
+			bb.Pop()
+			eval.Add(HORDE_PAWN_SCORES[us])
+		}
+		if us == HORDE_Pawns_Side {
+			// add balance for pawns
+			eval.Add(HORDE_BALANCE_SCORE)
+		}
+	}
 	all := pos.ByColor[White] | pos.ByColor[Black]
 	them := us.Opposite()
 
@@ -1349,19 +1382,51 @@ func (pos *Position) ThreeFoldRepetition() int {
 
 func (eng *Engine) endPosition() (int32, bool) {
 	pos := eng.Position // shortcut
-	// Trivial cases when kings are missing.
+	// in horde all pawns captured for the pawns side is mate
+	if IS_Horde {
+		if pos.AllPawnsCaptured() {
+			if HORDE_Pawns_Side == White {
+				return scoreMultiplier[pos.SideToMove] * (MatedScore + eng.ply()), true
+			} else {
+				return scoreMultiplier[pos.SideToMove] * (MateScore - eng.ply()), true
+			}
+		}
+	}
+	// trivial cases when kings are missing
 	if pos.ByPiece(White, King) == 0 && pos.ByPiece(Black, King) == 0 {
 		return 0, true
 	}
 	if pos.ByPiece(White, King) == 0 {
-		return scoreMultiplier[pos.SideToMove] * (MatedScore + eng.ply()), true
+		mateok := true
+		if IS_Horde {
+			// in horde pawns having no king is not mate
+			if HORDE_Pawns_Side == White {
+				mateok = false
+			}
+		}
+		if mateok {
+			return scoreMultiplier[pos.SideToMove] * (MatedScore + eng.ply()), true
+		}
 	}
 	if pos.ByPiece(Black, King) == 0 {
-		return scoreMultiplier[pos.SideToMove] * (MateScore - eng.ply()), true
+		mateok := true
+		if IS_Horde {
+			// in horde pawns having no king is not mate
+			if HORDE_Pawns_Side == Black {
+				mateok = false
+			}
+		}
+		if mateok {
+			return scoreMultiplier[pos.SideToMove] * (MateScore - eng.ply()), true
+		}
 	}
 	// Neither side cannot mate.
 	if pos.InsufficientMaterial() {
-		return 0, true
+		if IS_Horde {
+			// handle insufficient material in horde
+		} else {
+			return 0, true
+		}
 	}
 	// Fifty full moves without a capture or a pawn move.
 	if pos.FiftyMoveRule() {

@@ -2204,7 +2204,18 @@ func (pos *Position) SetEnpassantSquare(sq Square) {
 		} else if sq.Rank() == 5 { // Black
 			theirs, sq = pos.ByPiece(White, Pawn), RankFile(4, sq.File())
 		} else {
-			panic("bad en passant square")
+			if IS_Horde {
+				// in horde there can be ep squares on rank 1 and 6
+				if sq.Rank() == 1 { // White
+					theirs, sq = pos.ByPiece(Black, Pawn), RankFile(2, sq.File())
+				} else if sq.Rank() == 6 { // Black
+					theirs, sq = pos.ByPiece(White, Pawn), RankFile(5, sq.File())
+				} else {
+					panic("bad horde en passant square")
+				}
+			} else {
+				panic("bad en passant square")
+			}
 		}
 
 		if (sq.File() == 0 || !theirs.Has(sq-1)) && (sq.File() == 7 || !theirs.Has(sq+1)) {
@@ -3108,6 +3119,12 @@ func (pos *Position) UndoMove() {
 // -> moves *[]Move : moves
 
 func (pos *Position) genKingMovesNear(mask Bitboard, moves *[]Move) {
+	if IS_Horde {
+		if pos.SideToMove == HORDE_Pawns_Side {
+			// no king moves for the pawns in horde
+			return
+		}
+	}
 	pi := ColorFigure(pos.SideToMove, King)
 	from := pos.ByPiece(pos.SideToMove, King).AsSquare()
 	att := bbKingAttack[from] & mask
@@ -3161,6 +3178,27 @@ func (pos *Position) genPawnDoubleAdvanceMoves(kind int, moves *[]Move) {
 		from := ours.Pop()
 		to := from + forward
 		*moves = append(*moves, MakeMove(Normal, from, to, NoPiece, pawn))
+	}
+
+	if IS_Horde {
+		// in horde pawns can move two squares from base rank
+		ours = pos.ByPiece(pos.SideToMove, Pawn)
+		occu = pos.ByColor[White] | pos.ByColor[Black]
+		pawn = ColorFigure(pos.SideToMove, Pawn)
+
+		if pos.SideToMove == White {
+			ours &= RankBb(0) &^ South(occu) &^ South(South(occu))
+			forward = RankFile(+2, 0)
+		} else {
+			ours &= RankBb(7) &^ North(occu) &^ North(North(occu))
+			forward = RankFile(-2, 0)
+		}
+
+		for ours != 0 {
+			from := ours.Pop()
+			to := from + forward
+			*moves = append(*moves, MakeMove(Normal, from, to, NoPiece, pawn))
+		}
 	}
 }
 
@@ -3492,6 +3530,12 @@ func (pos *Position) Remove(sq Square, pi Piece) {
 // <- bool : true if checked
 
 func (pos *Position) IsCheckedLocal(side Color) bool {
+	if IS_Horde {
+		// in horde the pawns can be never in check
+		if side == HORDE_Pawns_Side {
+			return false
+		}
+	}
 	if IS_Atomic {
 		// no check with adjacent kings
 		if pos.KingsAdjacent() {
@@ -3520,6 +3564,18 @@ func (pos *Position) IsExploded(side Color) bool {
 ///////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////
+// AllPawnsCaptured : checks whether all pawns were captured for pawns side in horde
+// -> pos *Position : position
+// <- bool : true if all pawns were captured
+
+func (pos *Position) AllPawnsCaptured() bool {
+	return ( pos.ByFigure[Pawn] & pos.ByColor[HORDE_Pawns_Side] ) == 0
+}
+
+///////////////////////////////////////////////////
+
+
+///////////////////////////////////////////////////
 // IsChecked : returns true if side's king is checked
 // -> pos *Position : position
 // -> side Color : side
@@ -3528,6 +3584,15 @@ func (pos *Position) IsExploded(side Color) bool {
 func (pos *Position) IsChecked(side Color) bool {
 	///////////////////////////////////////////////////
 	// NEW
+	// check Horde global checks
+	if IS_Horde {
+		// in horde losing all pawns for the pawns is global check
+		if side == HORDE_Pawns_Side {
+			if pos.AllPawnsCaptured() {
+				return true
+			}
+		}
+	}
 	// check Atomic global checks
 	if IS_Atomic {
 		them := side.Opposite()
