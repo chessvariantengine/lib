@@ -2249,8 +2249,8 @@ func (pos *Position) Get(sq Square) Piece {
 			return ColorFigure(col, fig)
 		}
 	}
-	if IS_Atomic {
-		// TODO : in atomic sometimes square has color but no figure, has to be investigated
+	if IS_Atomic || IS_Horde {
+		// TODO : in atomic and horde sometimes square has color but no figure, has to be investigated
 		// NoPiece is returned to avoid panic
 		return NoPiece
 	}
