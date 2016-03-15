@@ -93,6 +93,17 @@ const(
 	XBOARD_Ponder_Complete
 )
 
+var XBOARD_State_Names = [...]string{
+	"Initial State",
+	"Observing",
+	"Analyzing",
+	"Analysis_Complete",
+	"Waiting",
+	"Thinking",
+	"Pondering",
+	"Ponder_Complete",
+}
+
 // XBOARD state
 // https://chessprogramming.wikispaces.com/Chess+Engine+Communication+Protocol
 var XBOARD_State              = XBOARD_Initial_State
@@ -102,6 +113,24 @@ var XBOARD_Engine_Side        = Black
 
 // XBOARD post mode
 var XBOARD_Post               = true
+
+// XBOARD level number of moves per block
+var XBOARD_level_moves        = 40
+
+// XBOARD level time [millisecond]
+var XBOARD_level_time         = 300000
+
+// XBOARD level increment [millisecond]
+var XBOARD_level_increment    = 0
+
+// XBOARD time [millisecond]
+var XBOARD_time               = 300000
+
+// XBOARD otim [millisecond]
+var XBOARD_otim               = 300000
+
+// XBOARD do hint
+var XBOARD_do_hint            = false
 
 // enumeration of variants
 const(
@@ -401,11 +430,34 @@ func ExecuteUci() error {
 // <- error : error
 
 func ExecuteXboard() error {
+	Log(fmt.Sprintf("received command %s in state %s\n",line,XBOARD_State_Names[XBOARD_State]))
 	// state independent commands
 	switch command {
 	case "quit":
 		// quit applies to all XBOARD states
 		return errQuit
+	case "force":
+			err := uci.XBOARD_force()
+			if err != nil {
+				return err
+			}
+			XBOARD_State = XBOARD_Observing
+			return nil
+	case "go":
+		err := uci.XBOARD_go()
+		if err != nil {
+			return err
+		}
+		return uci.XBOARD_Start_Thinking()
+	case "hint":
+		XBOARD_do_hint = true
+		return uci.XBOARD_Start_Thinking()
+	case "level":
+		return uci.XBOARD_level()
+	case "time":
+		return uci.XBOARD_time()
+	case "otim":
+		return uci.XBOARD_otim()
 	case "post":
 		return uci.XBOARD_post()
 	case "nopost":
@@ -451,13 +503,6 @@ func ExecuteXboard() error {
 			}
 			XBOARD_State = XBOARD_Waiting
 			return nil
-		case "go":
-			err := uci.XBOARD_go()
-			if err != nil {
-				return err
-			}
-			XBOARD_State = XBOARD_Thinking
-			return nil
 		case "playother":
 			err := uci.XBOARD_playother()
 			if err != nil {
@@ -500,21 +545,11 @@ func ExecuteXboard() error {
 			if err != nil {
 				return err
 			}
-			XBOARD_State = XBOARD_Thinking
-			return nil
+			return uci.XBOARD_Start_Thinking()
 		}
 	case XBOARD_Thinking:
 		// if engine sends the 'move' command
 		// state should change to XBOARD_Pondering
-		switch command {
-		case "force":
-			err := uci.XBOARD_force()
-			if err != nil {
-				return err
-			}
-			XBOARD_State = XBOARD_Observing
-			return nil
-		}
 	case XBOARD_Pondering:
 		switch command {
 		case "usermove":
@@ -522,8 +557,7 @@ func ExecuteXboard() error {
 			if err != nil {
 				return err
 			}
-			XBOARD_State = XBOARD_Thinking
-			return nil
+			return uci.XBOARD_Start_Thinking()
 		}
 	case XBOARD_Ponder_Complete:
 		switch command {
@@ -532,8 +566,7 @@ func ExecuteXboard() error {
 			if err != nil {
 				return err
 			}
-			XBOARD_State = XBOARD_Thinking
-			return nil
+			return uci.XBOARD_Start_Thinking()
 		}
 	}
 	return nil
@@ -679,6 +712,7 @@ func (uci *UCI) XBOARD_exit() error {
 // <- error : error
 
 func (uci *UCI) XBOARD_force() error {
+	uci.stop("")
 	XBOARD_Engine_Side = NoColor
 	return nil
 }
@@ -737,6 +771,121 @@ func (uci *UCI) XBOARD_setboard() error {
 		return err
 	}
 	uci.Engine.SetPosition(pos)
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_level : XBOARD level command
+// -> uci *UCI : UCI
+// <- error : error
+
+var reLevelTimeSeconds = regexp.MustCompile("([0-9]+):([0-9]+)")
+
+func (uci *UCI) XBOARD_level() error {
+	if numargs != 3 {
+		return fmt.Errorf("wrong number of arguments for level")
+	}
+	mvs, _ := strconv.Atoi(args[0])
+	XBOARD_level_moves = mvs
+	tmsmatch := reLevelTimeSeconds.FindStringSubmatch(args[1])
+	if tmsmatch != nil {
+		tms, _ := strconv.Atoi(tmsmatch[2])
+		// time is given as seconds
+		XBOARD_level_time = tms * 1000
+	} else {
+		tms, _ := strconv.Atoi(args[1])
+		// time is given as minutes
+		XBOARD_level_time = tms * 60 * 1000
+	}
+	incs, _ := strconv.Atoi(args[2])
+	XBOARD_level_increment = incs * 1000
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_time : XBOARD time command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_time() error {
+	if numargs != 1 {
+		return fmt.Errorf("wrong number of arguments for time")
+	}
+	// time given in centi seconds
+	tmcs, _ := strconv.Atoi(args[0])
+	// convert to milliseconds
+	XBOARD_time = tmcs * 10
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_time : XBOARD time command
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_otim() error {
+	if numargs != 1 {
+		return fmt.Errorf("wrong number of arguments for otim")
+	}
+	// time given in centi seconds
+	tmcs, _ := strconv.Atoi(args[0])
+	// convert to milliseconds
+	XBOARD_otim = tmcs * 10
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// XBOARD_Start_Thinking : start thinking
+// can be caused by several XBOARD commands
+// -> uci *UCI : UCI
+// <- error : error
+
+func (uci *UCI) XBOARD_Start_Thinking() error {
+	predicted := uci.predicted == uci.Engine.Position.Zobrist()
+	uci.timeControl = NewTimeControl(uci.Engine.Position, predicted)
+	uci.timeControl.MovesToGo = 30 // in case there is not time refresh
+	ponder := false
+
+	// assume engine plays black
+	wtime := XBOARD_otim
+	btime := XBOARD_time
+
+	if XBOARD_Engine_Side == White {
+		// engine plays white
+		wtime = XBOARD_time
+		btime = XBOARD_otim
+	}
+
+	uci.timeControl.WTime = time.Duration(wtime) * time.Millisecond
+	uci.timeControl.BTime = time.Duration(btime) * time.Millisecond
+
+	// increment is same for both sides
+	uci.timeControl.WInc = time.Duration(XBOARD_level_increment) * time.Millisecond
+	uci.timeControl.BInc = time.Duration(XBOARD_level_increment) * time.Millisecond
+
+	uci.timeControl.MovesToGo = XBOARD_level_moves
+
+	if ponder {
+		// ponder was requested, so fill the channel
+		// next write to uci.ponder will block
+		uci.ponder <- struct{}{}
+	}
+
+	uci.timeControl.Start(ponder)
+	uci.ready <- struct{}{}
+
+	go uci.play()
+
+	XBOARD_State = XBOARD_Thinking
+
 	return nil
 }
 
@@ -841,6 +990,9 @@ func (ul *uciLogger) EndSearch() {
 
 func (ul *uciLogger) PrintPV(stats Stats, score int32, pv []Move) {
 	if Protocol == PROTOCOL_XBOARD {
+		if !XBOARD_Post {
+			return
+		}
 		XBOARD_now := time.Now()
 		XBOARD_elapsed := uint64(maxDuration(XBOARD_now.Sub(ul.start), time.Microsecond))
 		// XBOARD_nps := stats.Nodes * uint64(time.Second) / XBOARD_elapsed
@@ -1292,6 +1444,19 @@ func (uci *UCI) play() {
 				uci.Engine.DoMove(moves[0])
 				uci.PrintBoard()
 				MakeAnalyzedMove = false
+			}
+		}
+	}
+
+	if Protocol == PROTOCOL_XBOARD {
+		if len(moves) > 0 {
+			uci.Engine.DoMove(moves[0])
+			XBOARD_State = XBOARD_Pondering
+			if XBOARD_do_hint {
+				Printu(fmt.Sprintf("Hint: %s\n", moves[0].UCI()))
+				XBOARD_do_hint = false
+			} else {
+				Printu(fmt.Sprintf("move %s\n", moves[0].UCI()))
 			}
 		}
 	}
