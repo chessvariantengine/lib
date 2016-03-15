@@ -45,13 +45,13 @@ var ATOMIC_PAWN_BONUS_SCORE     = Score{ M: int32(ATOMIC_PAWN_BONUS*128) , E: in
 var HORDE_PAWN_SCORES [ColorArraySize]Score
 
 // balance material inequality in horde
-var HORDE_BALANCE_SCORE         = Score{ M: int32(250*128) , E: int32(250*128) }
+var HORDE_BALANCE_SCORE         = Score{ M: int32(-1400*128) , E: int32(-1400*128) }
 
 // horde center bonus score
-var HORDE_CENTER_BONUS          = Score{ M: int32(20*128) , E: int32(20*128) }
+var HORDE_CENTER_BONUS          = Score{ M: int32(128) , E: int32(128) }
 
 // horde center bonus weights
-var HORDE_CENTER_BONUS_WEIGHTS  = [...]int32{ 0, 1, 2, 3, 3, 2, 1, 0 }
+var HORDE_CENTER_BONUS_WEIGHTS  = [...]int32{ 0, 80, 120, 150, 150, 120, 80, 0 }
 
 const (
 	KnownWinScore  int32 = 25000000       // KnownWinScore is strictly greater than all evaluation scores (mate not included).
