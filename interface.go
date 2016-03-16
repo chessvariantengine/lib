@@ -57,7 +57,6 @@ func Run(variant int, protocol int) {
 
 	// set up logging
 	log.SetOutput(os.Stdout)
-	log.SetPrefix("info string ")
 	log.SetFlags(log.Lshortfile)
 
 	// command interpreter main loop
@@ -241,7 +240,8 @@ var VARIANT_AND_PROTOCOL_TO_ENGINE_NAME=map[EngineNameIndex]string{
 	EngineNameIndex{ variant: VARIANT_Racing_Kings, protocol: PROTOCOL_UCI }:"verkuci",
 	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_UCI }:"venatuci",
 	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_XBOARD }:"venatxboard",
-	EngineNameIndex{ variant: VARIANT_Horde, protocol: PROTOCOL_UCI }:"vehotuci",
+	EngineNameIndex{ variant: VARIANT_Horde, protocol: PROTOCOL_UCI }:"vehoruci",
+	EngineNameIndex{ variant: VARIANT_Horde, protocol: PROTOCOL_XBOARD }:"vehorxboard",
 }
 
 // quit application 'error'
@@ -340,7 +340,9 @@ func ExecuteLine(setline string) error {
 		}}
 		if err != nil {
 			if err != errQuit && err != errTestOk {
-				log.Println(err)
+				if Protocol == PROTOCOL_UCI {
+					log.Println(err)
+				}
 			}
 		}
 	}
@@ -499,8 +501,8 @@ func ExecuteXboard() error {
 	case XBOARD_Initial_State:
 		switch command {
 		case "xboard":
-			Printu("feature myname=\"venatxboard by Alexandru Mosoi\""+
-			" setboard=1 usermove=1 playother=1 done=1\n")
+			Printu(fmt.Sprintf("feature myname=\"%s by Alexandru Mosoi\""+
+			" setboard=1 usermove=1 playother=1 done=1\n",GetEngineName()))
 			XBOARD_State = XBOARD_Observing
 			return nil
 		}
@@ -595,6 +597,19 @@ func ExecuteXboard() error {
 // XBOARD commands
 
 ///////////////////////////////////////////////
+// XBOARD_Error : format and prints an XBOARD error and returns it
+// -> etype string : error type
+// -> evalue string : error value
+
+func XBOARD_Error(etype, evalue string) error {
+	estr := fmt.Sprintf("Error (%s): %s", etype, evalue)
+	fmt.Printf("%s\n", estr)
+	return fmt.Errorf(estr)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // XBOARD_Check_Analyze : check if analysis should start upon changing the position
 
 func XBOARD_Check_Analyze() {
@@ -630,7 +645,7 @@ func XBOARD_Check_Analyze() {
 func (uci *UCI) XBOARD_usermove() error {
 	Log(fmt.Sprintf("received usermove command with %d args\n",numargs))
 	if numargs != 1 {
-		return fmt.Errorf("wrong number of arguments for usermove")
+		return XBOARD_Error("wrong number of arguments for usermove",fmt.Sprintf("%d",numargs))
 	}
 	// stop any ongoing analysis
 	Log("stopping engine\n")
@@ -802,7 +817,7 @@ var reLevelTimeSeconds = regexp.MustCompile("([0-9]+):([0-9]+)")
 
 func (uci *UCI) XBOARD_level() error {
 	if numargs != 3 {
-		return fmt.Errorf("wrong number of arguments for level")
+		return XBOARD_Error("wrong number of arguments for level",fmt.Sprintf("%d",numargs))
 	}
 	mvs, _ := strconv.Atoi(args[0])
 	XBOARD_level_moves = mvs
@@ -830,7 +845,7 @@ func (uci *UCI) XBOARD_level() error {
 
 func (uci *UCI) XBOARD_time() error {
 	if numargs != 1 {
-		return fmt.Errorf("wrong number of arguments for time")
+		return XBOARD_Error("wrong number of arguments for time",fmt.Sprintf("%d",numargs))
 	}
 	// time given in centi seconds
 	tmcs, _ := strconv.Atoi(args[0])
@@ -848,7 +863,7 @@ func (uci *UCI) XBOARD_time() error {
 
 func (uci *UCI) XBOARD_otim() error {
 	if numargs != 1 {
-		return fmt.Errorf("wrong number of arguments for otim")
+		return XBOARD_Error("wrong number of arguments for otim",fmt.Sprintf("%d",numargs))
 	}
 	// time given in centi seconds
 	tmcs, _ := strconv.Atoi(args[0])
@@ -1179,15 +1194,11 @@ func (uci *UCI) Execute(line string) error {
 func (uci *UCI) MakeSanMove(line string) error {
 	option := reMakeSanMove.FindStringSubmatch(line)
 	if option == nil {
-		res:=fmt.Errorf("invalid make san move arguments")
-		fmt.Println(res)
-		return res
+		return XBOARD_Error("invalid make san move arguments",line)
 	}
 	move, err := uci.Engine.Position.SANToMove(option[1])
 	if err != nil {
-		res:=fmt.Errorf("invalid move")
-		fmt.Println(res)
-		return res
+		return XBOARD_Error("invalid move",option[1])
 	}
 	uci.Engine.DoMove(move)
 	uci.PrintBoard()
@@ -1207,9 +1218,7 @@ func (uci *UCI) UndoMove(line string) error {
 		if Protocol == PROTOCOL_XBOARD {
 			return nil
 		}
-		res:=fmt.Errorf("no move to delete")
-		fmt.Println(res)
-		return res
+		return XBOARD_Error("no move to delete",line)
 	}
 	uci.Engine.UndoMove()
 	if Protocol == PROTOCOL_UCI {
@@ -1574,6 +1583,10 @@ func (uci *UCI) setoption(line string) error {
 // <- error : error
 
 func (uci *UCI) SetVariant(setVariant int) error {
+	switch Protocol {
+		case PROTOCOL_UCI: log.SetPrefix("info string ")
+		case PROTOCOL_XBOARD: log.SetPrefix("Error ")
+	}
 	uci.Engine.SetVariant(setVariant)
 	return nil
 }
