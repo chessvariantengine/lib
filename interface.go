@@ -80,6 +80,9 @@ func Run(variant int, protocol int) {
 ///////////////////////////////////////////////
 // definitions
 
+// log commands in log.txt
+var DO_LOG                    = false
+
 // enumeration of XBOARD states
 const(
 	XBOARD_Initial_State      = iota
@@ -238,6 +241,7 @@ type EngineNameIndex struct{
 var VARIANT_AND_PROTOCOL_TO_ENGINE_NAME=map[EngineNameIndex]string{
 	EngineNameIndex{ variant: VARIANT_Standard, protocol: PROTOCOL_UCI }:"zurichess",
 	EngineNameIndex{ variant: VARIANT_Racing_Kings, protocol: PROTOCOL_UCI }:"verkuci",
+	EngineNameIndex{ variant: VARIANT_Racing_Kings, protocol: PROTOCOL_XBOARD }:"verkxboard",
 	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_UCI }:"venatuci",
 	EngineNameIndex{ variant: VARIANT_Atomic, protocol: PROTOCOL_XBOARD }:"venatxboard",
 	EngineNameIndex{ variant: VARIANT_Horde, protocol: PROTOCOL_UCI }:"vehoruci",
@@ -282,12 +286,16 @@ var MakeAnalyzedMove bool = false
 // ClearLog : create an empty log.txt file
 
 func ClearLog() {
-f,err:=os.Create("log.txt")
-	if err!=nil {
-		panic(err)
-	} else {
-		f.Close()
+	if !DO_LOG {
+		return
 	}
+	// for debugging purposes
+	f,err:=os.Create("log.txt")
+		if err!=nil {
+			panic(err)
+		} else {
+			f.Close()
+		}
 }
 
 ///////////////////////////////////////////////
@@ -297,6 +305,10 @@ f,err:=os.Create("log.txt")
 // -> what string : string to be appended
 
 func Log(what string) {
+	if !DO_LOG {
+		return
+	}
+	// for debugging purposes
 	f,err:=os.OpenFile("log.txt",os.O_CREATE|os.O_APPEND|os.O_WRONLY,0666)
 	if err!=nil {
 	    panic(err)
@@ -1194,11 +1206,13 @@ func (uci *UCI) Execute(line string) error {
 func (uci *UCI) MakeSanMove(line string) error {
 	option := reMakeSanMove.FindStringSubmatch(line)
 	if option == nil {
-		return XBOARD_Error("invalid make san move arguments",line)
+		XBOARD_Error("invalid make san move arguments",line)
+		return errTestOk
 	}
 	move, err := uci.Engine.Position.SANToMove(option[1])
 	if err != nil {
-		return XBOARD_Error("invalid move",option[1])
+		XBOARD_Error("invalid move",option[1])
+		return errTestOk
 	}
 	uci.Engine.DoMove(move)
 	uci.PrintBoard()
@@ -1218,7 +1232,8 @@ func (uci *UCI) UndoMove(line string) error {
 		if Protocol == PROTOCOL_XBOARD {
 			return nil
 		}
-		return XBOARD_Error("no move to delete",line)
+		XBOARD_Error("no move to delete",line)
+		return errTestOk
 	}
 	uci.Engine.UndoMove()
 	if Protocol == PROTOCOL_UCI {
