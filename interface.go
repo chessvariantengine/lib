@@ -688,6 +688,27 @@ func BuildBook() {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// StartBuildBook : start building book
+
+func StartBuildBook() {
+	BuildBookReady = make(chan int)
+	BuildBookStopped = false
+	go BuildBook()
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// StopBuildBook : stop building book
+
+func StopBuildBook() {
+	BuildBookStopped = true
+	<- BuildBookReady
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // AddMove : add move to current position's book moves
 
 var AddMoveChan chan int
@@ -864,13 +885,10 @@ func ExecuteTest() error {
 			AddNodeRecursive(0,"current pos")
 			return errTestOk
 		case "bb":
-			BuildBookReady = make(chan int)
-			BuildBookStopped = false
-			go BuildBook()
+			StartBuildBook()
 			return errTestOk
 		case "bs":
-			BuildBookStopped = true
-			<- BuildBookReady
+			StopBuildBook()
 			return errTestOk
 		case "sv":
 			if numargs>0 {
@@ -1720,12 +1738,17 @@ func (uci *UCI) UndoMove(line string) error {
 // <- error : error
 
 func (uci *UCI) uci(line string) error {
-	fmt.Printf("id name zurirk\n")
+	fmt.Printf("id name %s\n",GetEngineName())
 	fmt.Printf("id author Alexandru Mosoi\n")
 	fmt.Printf("\n")
 	fmt.Printf("option name UCI_AnalyseMode type check default false\n")
 	fmt.Printf("option name Hash type spin default %v min 1 max 65536\n", DefaultHashTableSizeMB)
 	fmt.Printf("option name Ponder type check default true\n")
+	fmt.Printf("option name ClearHash type button\n")
+	fmt.Printf("option name LoadBook type button\n")
+	fmt.Printf("option name SaveBook type button\n")
+	fmt.Printf("option name StartBuildBook type button\n")
+	fmt.Printf("option name StopBuildBook type button\n")
 	if IS_Racing_Kings {
 		for piece:=Knight ; piece<King ; piece++ {
 			fmt.Printf("option name %s Value type spin default %d min 0 max 1000\n", 
@@ -1925,6 +1948,17 @@ func (uci *UCI) stop(line string) error {
 // -> ignoremoves []Move : list of moves that should be ignored
 
 func (uci *UCI) play() {
+	if uci.timeControl.Depth == 64 {
+		mentrylist := uci.Engine.Position.GetSortedMoveEntryList()
+		if len(mentrylist) > 0 {
+			algeb := mentrylist[0].Algeb
+			Printu(fmt.Sprintf("info depth 0 time 0 pv %s\nbestmove %s\n", algeb, algeb))
+			<-uci.ready
+
+			AddMoveChan <- 0
+			return
+		}
+	}
 	moves := uci.Engine.Play(uci.timeControl, IgnoreMoves)
 
 	if len(moves) >= 2 {
@@ -2021,7 +2055,7 @@ func (uci *UCI) play() {
 // -> line string : command line
 // <- error : error
 
-var reOption = regexp.MustCompile(`^setoption\s+name\s+(.+?)(\s+value\s+(.*))?$`)
+var reOption = regexp.MustCompile(`^setoption\s+name\s+(.+?)(\s+value\s*(.*))?$`)
 
 var reRkSetPieceValue = regexp.MustCompile("^([^\\s]+)\\s+Value$")
 
@@ -2038,8 +2072,20 @@ func (uci *UCI) setoption(line string) error {
 		return fmt.Errorf("missing setoption name")
 	}
 	switch option[1] {
-	case "Clear Hash":
+	case "ClearHash":
 		GlobalHashTable.Clear()
+		return nil
+	case "StartBuildBook":
+		StartBuildBook()
+		return nil
+	case "StopBuildBook":
+		StopBuildBook()
+		return nil
+	case "LoadBook":
+		LoadBook()
+		return nil
+	case "SaveBook":
+		SaveBook()
 		return nil
 	}
 
