@@ -25,6 +25,8 @@ import(
 	"bytes"
 	"regexp"
 	"strconv"
+	"encoding/json"
+	"io/ioutil"
 )
 
 //////////////////////////////////////////////////////
@@ -43,6 +45,8 @@ func Run(variant int, protocol int) {
 	Protocol = protocol
 
 	ClearLog()
+
+	ClearBook()
 
 	// create uci
 	uci = NewUCI()
@@ -279,7 +283,207 @@ type UCI struct {
 
 var MakeAnalyzedMove bool = false
 
+// book definitions
+
+// store scores option
+var StoreScores bool = true
+
+// minimal depth required for storing a score
+var StoreMinDepth = 12
+
+// book version : should be stored together with engine score in the book
+// if the engine is modified a higher book version can signal
+// that scores with lower version number should be overwritten
+var BookVersion int = 1
+
+// book move entry holds the evaluation of single move
+type BookMoveEntry struct {
+	// move in algebraic notation
+	Algeb string
+	// score returned by search
+	Score int
+	// depth of search that returned Score
+	Depth int
+	// book version
+	BookVersion int
+	// HasEval tells whether move has a minimaxed eval
+	HasEval bool
+	// eval determined by minimaxing
+	Eval int
+}
+
+// book entry holds all evaluated moves for a given position
+type BookPositionEntry struct {
+	// move entries
+	// key for move entries is move in algebraic notation
+	MoveEntries map[string]BookMoveEntry
+}
+
+// book main entry holds the entire book
+type BookMainEntry struct {
+	// position entries
+	// key for position entries is the Zobrist key converted to string
+	PositionEntries map[string]BookPositionEntry
+}
+
+var Book BookMainEntry
+
 // end definitions
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// ZobristStr : get the Zobrist key of the position as string
+// -> pos *Position : position
+// <- string : Zobrist key as string
+
+func (pos *Position) ZobristStr() string {
+	return fmt.Sprintf("%d",pos.Zobrist())
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetBookEntry : get the book entry for position
+// -> pos *Position : position
+// <- BookPositionEntry : book position entry
+// <- bool : true if position is in the book
+
+func (pos *Position) GetBookEntry() ( BookPositionEntry , bool ) {
+	posentry , found := Book.PositionEntries[pos.ZobristStr()]
+	return posentry , found
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// ToPrintable : move entry in printable form
+// -> mentry *BookMoveEntry : move entry
+// <- string : move entry printable
+
+func (mentry *BookMoveEntry) ToPrintable() string {
+	evalstr := "?"
+	if mentry.HasEval {
+		evalstr = fmt.Sprintf("%d", mentry.Eval)
+	}
+	return fmt.Sprintf("%6s ( d : %3d , v : %3d ) score : %5d , eval : %5s\n",
+		mentry.Algeb, mentry.Depth, mentry.BookVersion, mentry.Score, evalstr)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// BookMovesToPrintable : printable version of book moves for position
+// -> pos *Position : position
+// <- string : printable version of book moves
+
+func (pos *Position) BookMovesToPrintable() string {
+	pentry , found := pos.GetBookEntry()
+	buff := "book moves for position :"
+	if !found {
+		buff += " <none>\n"
+		return buff
+	}
+	buff += "\n"
+	for _ , mentry := range pentry.MoveEntries {
+		buff += mentry.ToPrintable()
+	}
+	return buff
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetMoveEntry : get a move entry from a position entry
+// -> pentry *BookPositionEntry : position entry
+// -> algeb string : move in algebraic notation
+// <- BookMoveEntry : book move entry
+// <- bool : true if move was found in the position entry
+
+func (pentry *BookPositionEntry) GetMoveEntry(algeb string) ( BookMoveEntry , bool ) {
+	mentry , found := pentry.MoveEntries[algeb]
+	return mentry , found
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetMoveEntry : get the book move entry for move
+// -> pos *Position : position
+// -> algeb string : move in algebraic notation
+// <- BookMoveEntry : book move entry
+// <- bool : true if move is in the book
+
+func (pos *Position) GetMoveEntry(algeb string) ( BookMoveEntry , bool ) {
+	pentry , pfound := pos.GetBookEntry()
+	if !pfound {
+		return BookMoveEntry{} , false
+	}
+	return pentry.GetMoveEntry(algeb)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// StoreMoveEntry : store move entry for move
+// -> pos *Position : position
+// -> algeb string : move in algebraic notation
+// -> mentry BookMoveEntry : move entry
+
+func (pos *Position) StoreMoveEntry(algeb string, mentry BookMoveEntry) {
+	pentry , pfound := pos.GetBookEntry()
+	if !pfound {
+		pentry = BookPositionEntry{
+			MoveEntries : make(map[string]BookMoveEntry),
+		}
+	}
+	pentry.MoveEntries[algeb] = mentry
+	Book.PositionEntries[pos.ZobristStr()] = pentry
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// ClearBook : creates Book as an empty book
+
+func ClearBook() {
+	Book.PositionEntries = make(map[string]BookPositionEntry)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// SaveBook : saves Book to disk
+
+func SaveBook() {
+	f,err:=os.Create("book.txt")
+	if err!=nil {
+		panic(err)
+	} else {
+		b , err := json.Marshal(Book)
+		if err != nil {
+			panic(err)
+		}
+		f.Write(b)
+		f.Close()
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// SaveBook : saves Book to disk
+
+func LoadBook() {
+	jsonBlob , err := ioutil.ReadFile("book.txt")
+	if err != nil {
+		panic(err)
+	}
+	err = json.Unmarshal(jsonBlob, &Book)
+	if err != nil {
+		panic(err)
+	}
+}
+
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
@@ -411,8 +615,17 @@ func ExecuteTest() error {
 		case "l":
 			uci.Engine.Position.PrintLegalMoves()
 			return errTestOk
+		case "pb":
+			fmt.Print(uci.Engine.Position.BookMovesToPrintable())
+			return errTestOk
 		case "vs":
 			PrintPieceValues()
+			return errTestOk
+		case "sb":
+			SaveBook()
+			return errTestOk
+		case "lb":
+			LoadBook()
 			return errTestOk
 		case "sv":
 			if numargs>0 {
@@ -1032,7 +1245,12 @@ func (ul *uciLogger) EndSearch() {
 // -> score int32 : score
 // -> pv []Move : pv
 
+var LastScore int32
+
 func (ul *uciLogger) PrintPV(stats Stats, score int32, pv []Move) {
+	// store latest score
+	LastScore = score
+
 	if Protocol == PROTOCOL_XBOARD {
 		if !XBOARD_Post {
 			return
@@ -1481,6 +1699,32 @@ func (uci *UCI) play() {
 		}
 
 		if len(moves) > 0 {
+			algeb := moves[0].UCI()
+			if StoreScores {
+				depth := int(uci.Engine.Stats.Depth)
+				if depth >= StoreMinDepth {
+					mentry , found := uci.Engine.Position.GetMoveEntry(algeb)
+					ok := true
+					if found {
+						if depth < mentry.Depth {
+							// if depth is lower than that of stored move
+							// the score is only stored if book version is higher
+							ok = BookVersion > mentry.BookVersion
+						}
+					}
+					if ok {
+						umentry := BookMoveEntry{
+							Algeb : algeb,
+							Score : int(LastScore),
+							Depth : depth,
+							BookVersion : BookVersion,
+							HasEval : false,
+							Eval : 0,
+						}
+						uci.Engine.Position.StoreMoveEntry(algeb, umentry)
+					}
+				}
+			}
 			if MakeAnalyzedMove {
 				uci.Engine.DoMove(moves[0])
 				uci.PrintBoard()
