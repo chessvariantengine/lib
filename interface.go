@@ -587,8 +587,10 @@ func LoadBook() {
 // AddNodeRecursive : add node recursive
 // -> depth int : depth
 
+var SelectLimits = [15]int{80,70,60,50,45,40,35,30,25,20,15,10,10,10,10}
+
 func AddNodeRecursive(depth int, line string) {
-	if depth > 15 {
+	if depth >= 15 {
 		return
 	}
 	mentrylist := uci.Engine.Position.GetSortedMoveEntryList()
@@ -600,7 +602,8 @@ func AddNodeRecursive(depth int, line string) {
 		for _ , mentry := range mentrylist {
 			algeb := mentry.Algeb
 			r := Rand.Intn(100)
-			if r > 50 {
+			limit := SelectLimits[depth]
+			if r > limit {
 				move , err := uci.Engine.Position.UCIToMove(algeb)
 				if err == nil {
 					uci.Engine.DoMove(move)
@@ -621,6 +624,44 @@ func AddNodeRecursive(depth int, line string) {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// MinimaxOut : minimax out book wrt current position
+// -> depth int : depth
+// <- int : eval
+
+func MinimaxOut(depth int) int {
+	alpha := int(-InfinityScore)
+	if depth > 15 {
+		return alpha
+	}
+	pos := uci.Engine.Position
+	pentry , found := pos.GetBookEntry()
+	if found {
+		for algeb , mentry := range pentry.MoveEntries {
+			score := mentry.Score
+			move , err := pos.UCIToMove(algeb)
+			if err == nil {
+				uci.Engine.DoMove(move)
+				eval := -MinimaxOut(depth+1)
+				if eval == int(InfinityScore) {
+					eval = score
+				}
+				mentry.Eval = eval
+				mentry.HasEval = true
+				if eval > alpha {
+					alpha = eval
+				}
+				pentry.MoveEntries[algeb] = mentry
+				uci.Engine.UndoMove()
+			}
+		}
+		Book.PositionEntries[pos.ZobristStr()] = pentry
+	}
+	return alpha
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // BuildBook : build book, should be run in go routine
 
 var BuildBookStopped bool
@@ -629,8 +670,16 @@ var BuildBookReady chan int
 
 func BuildBook() {
 	DontPrintPV = true
+	cnt := 0
 	for !BuildBookStopped {
 		AddNodeRecursive(0,"current pos")
+		cnt++
+		if cnt >= 10 {
+			fmt.Printf("minimaxing out\n")
+			MinimaxOut(0)
+			ExecuteLine("pb")
+			cnt = 0
+		}
 	}
 	BuildBookReady <- 0
 	DontPrintPV = false
