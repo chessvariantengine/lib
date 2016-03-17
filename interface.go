@@ -27,6 +27,7 @@ import(
 	"strconv"
 	"encoding/json"
 	"io/ioutil"
+	"math/rand"
 )
 
 //////////////////////////////////////////////////////
@@ -326,7 +327,17 @@ type BookMainEntry struct {
 	PositionEntries map[string]BookPositionEntry
 }
 
+// book
 var Book BookMainEntry
+
+// ignore moves
+var IgnoreMoves = []Move{}
+
+// random number generator
+var Rand=rand.New(rand.NewSource(time.Now().UnixNano()))
+
+// dont print pv
+var DontPrintPV = false
 
 // end definitions
 ///////////////////////////////////////////////
@@ -351,6 +362,92 @@ func (pos *Position) ZobristStr() string {
 func (pos *Position) GetBookEntry() ( BookPositionEntry , bool ) {
 	posentry , found := Book.PositionEntries[pos.ZobristStr()]
 	return posentry , found
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetEval : get eval of move entry
+// returns eval if it has minimaxed eval, otherwise return the engine search score
+// -> mentry *BookMoveEntry : move entry
+// <- int : eval
+
+func (mentry *BookMoveEntry) GetEval() int {
+	if mentry.HasEval {
+		return mentry.Eval
+	}
+	return mentry.Score
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetSortedMoveEntryList : get sorted move entry list for position entry
+// -> bentry *BookPositionEntry : position entry
+// <- []BookMoveEntry : sorted move entry list
+
+func (posentry *BookPositionEntry) GetSortedMoveEntryList() []BookMoveEntry {
+	mentrylist := []BookMoveEntry{}
+	for _ , mentry := range posentry.MoveEntries {
+		// sort
+		inserted := false
+		for i := 0 ; i < len(mentrylist) ; i++ {
+			if mentry.GetEval() > mentrylist[i].GetEval() {
+				sorted := []BookMoveEntry{}
+				for j := 0 ; j < i ; j++ {
+					sorted = append(sorted, mentrylist[j])
+				}
+				sorted = append(sorted, mentry)
+				for j := i ; j < len(mentrylist) ; j++ {
+					sorted = append(sorted, mentrylist[j])
+				}
+				mentrylist = sorted
+				inserted = true
+				break
+			}
+		}
+		if !inserted {
+			mentrylist = append(mentrylist, mentry)
+		}
+	}
+	return mentrylist
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetSortedMoveEntryList : get the list of move entries in book entry for position
+// the list is sorted in descending order of eval
+// -> pos *Position : position
+// <- []BookMoveEntry : move entry list
+
+func (pos *Position) GetSortedMoveEntryList() []BookMoveEntry {
+	posentry , found := pos.GetBookEntry()
+	if !found {
+		return []BookMoveEntry{}
+	}
+	mentrylist := posentry.GetSortedMoveEntryList()
+	return mentrylist
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetBookMoveList : get the list of moves in book entry for position
+// the list is sorted in descending order of eval
+// -> pos *Position : position
+// <- []Move : move list
+
+func (pos *Position) GetBookMoveList() []Move {
+	movelist := []Move{}
+	mentrylist := pos.GetSortedMoveEntryList()
+	for i := 0 ; i < len(mentrylist) ; i++ {
+		m , err := pos.UCIToMove(mentrylist[i].Algeb)
+		if err == nil {
+			movelist = append(movelist, m)
+		}
+	}
+	return movelist
 }
 
 ///////////////////////////////////////////////
@@ -384,7 +481,7 @@ func (pos *Position) BookMovesToPrintable() string {
 		return buff
 	}
 	buff += "\n"
-	for _ , mentry := range pentry.MoveEntries {
+	for _ , mentry := range pentry.GetSortedMoveEntryList() {
 		buff += mentry.ToPrintable()
 	}
 	return buff
@@ -482,6 +579,90 @@ func LoadBook() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// AddNodeRecursive : add node recursive
+// -> depth int : depth
+
+func AddNodeRecursive(depth int, line string) {
+	if depth > 15 {
+		return
+	}
+	mentrylist := uci.Engine.Position.GetSortedMoveEntryList()
+	if len(mentrylist) <= 0 {
+		fmt.Printf("appending move to %s\n", line)
+		AddMove()
+	} else {
+		selected := false
+		for _ , mentry := range mentrylist {
+			algeb := mentry.Algeb
+			r := Rand.Intn(100)
+			if r > 50 {
+				move , err := uci.Engine.Position.UCIToMove(algeb)
+				if err == nil {
+					uci.Engine.DoMove(move)
+					AddNodeRecursive(depth+1, line+" "+algeb)
+					uci.Engine.UndoMove()
+					selected = true
+					break
+				}
+			}
+		}
+		if !selected {
+			fmt.Printf("adding new move to %s\n", line)
+			AddMove()
+		}
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// BuildBook : build book, should be run in go routine
+
+var BuildBookStopped bool
+
+var BuildBookReady chan int
+
+func BuildBook() {
+	DontPrintPV = true
+	for !BuildBookStopped {
+		AddNodeRecursive(0,"current pos")
+	}
+	BuildBookReady <- 0
+	DontPrintPV = false
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// AddMove : add move to current position's book moves
+
+var AddMoveChan chan int
+
+func AddMove() {
+	IgnoreMoves = uci.Engine.Position.GetBookMoveList()
+
+	LegalMoves := uci.Engine.Position.GetLegalMoves(GET_ALL)
+
+	if len(IgnoreMoves) >= len(LegalMoves) {
+		// if all moves were already searched, nothing to do
+		return
+	}
+
+	command := fmt.Sprintf("go depth %d", StoreMinDepth)
+
+	GlobalHashTable.Clear()
+
+	AddMoveChan = make(chan int)
+
+	ExecuteLine(command)
+
+	// wait for analysis to finish
+	<- AddMoveChan
 }
 
 ///////////////////////////////////////////////
@@ -626,6 +807,21 @@ func ExecuteTest() error {
 			return errTestOk
 		case "lb":
 			LoadBook()
+			return errTestOk
+		case "am":
+			AddMove()
+			return errTestOk
+		case "an":
+			AddNodeRecursive(0,"current pos")
+			return errTestOk
+		case "bb":
+			BuildBookReady = make(chan int)
+			BuildBookStopped = false
+			go BuildBook()
+			return errTestOk
+		case "bs":
+			BuildBookStopped = true
+			<- BuildBookReady
 			return errTestOk
 		case "sv":
 			if numargs>0 {
@@ -856,6 +1052,7 @@ func XBOARD_Check_Analyze() {
 		uci.ready <- struct{}{}
 
 		Log("starting analysis\n")
+		IgnoreMoves = []Move{}
 		go uci.play()
 	}
 }
@@ -1139,6 +1336,7 @@ func (uci *UCI) XBOARD_Start_Thinking() error {
 	uci.timeControl.Start(ponder)
 	uci.ready <- struct{}{}
 
+	IgnoreMoves = []Move{}
 	go uci.play()
 
 	XBOARD_State = XBOARD_Thinking
@@ -1250,6 +1448,10 @@ var LastScore int32
 func (ul *uciLogger) PrintPV(stats Stats, score int32, pv []Move) {
 	// store latest score
 	LastScore = score
+
+	if DontPrintPV {
+		return
+	}
 
 	if Protocol == PROTOCOL_XBOARD {
 		if !XBOARD_Post {
@@ -1671,9 +1873,10 @@ func (uci *UCI) stop(line string) error {
 // play : starts the engine
 // should run in its own separate goroutine
 // -> uci *UCI : UCI
+// -> ignoremoves []Move : list of moves that should be ignored
 
 func (uci *UCI) play() {
-	moves := uci.Engine.Play(uci.timeControl)
+	moves := uci.Engine.Play(uci.timeControl, IgnoreMoves)
 
 	if len(moves) >= 2 {
 		uci.Engine.Position.DoMove(moves[0])
@@ -1689,13 +1892,17 @@ func (uci *UCI) play() {
 	uci.ponder <- struct{}{}
 	<-uci.ponder
 
+	IgnoreMoves = []Move{}
+
 	if Protocol == PROTOCOL_UCI {
-		if len(moves) == 0 {
-			fmt.Printf("bestmove (none)\n")
-		} else if len(moves) == 1 {
-			fmt.Printf("bestmove %v\n", moves[0].UCI())
-		} else {
-			fmt.Printf("bestmove %v ponder %v\n", moves[0].UCI(), moves[1].UCI())
+		if !DontPrintPV {
+			if len(moves) == 0 {
+				fmt.Printf("bestmove (none)\n")
+			} else if len(moves) == 1 {
+				fmt.Printf("bestmove %v\n", moves[0].UCI())
+			} else {
+				fmt.Printf("bestmove %v ponder %v\n", moves[0].UCI(), moves[1].UCI())
+			}
 		}
 
 		if len(moves) > 0 {
@@ -1722,6 +1929,7 @@ func (uci *UCI) play() {
 							Eval : 0,
 						}
 						uci.Engine.Position.StoreMoveEntry(algeb, umentry)
+						fmt.Printf("stored move %s score %d\n", algeb, LastScore)
 					}
 				}
 			}
@@ -1752,6 +1960,8 @@ func (uci *UCI) play() {
 	// there is a race info / bestmove lines are intermixed wrongly
 	// this confuses the tuner, at least
 	<-uci.ready
+
+	AddMoveChan <- 0
 }
 
 ///////////////////////////////////////////////

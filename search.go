@@ -2408,9 +2408,10 @@ func (tc *TimeControl) Stopped() bool {
 // -> α int32 : alpha, lower bound
 // -> β int32 : beta, upper bound
 // -> depth int32 : remaining depth (decreasing)
+// -> ignoremoves []Move : list of moves that should not be searched
 // <- int32 : score of the current position up to depth (modulo reductions/extensions) from current player's POV
 
-func (eng *Engine) searchTree(α, β, depth int32) int32 {
+func (eng *Engine) searchTree(α, β, depth int32, ignoremoves []Move) int32 {
 	ply := eng.ply()
 	pvNode := α+1 < β
 	pos := eng.Position
@@ -2528,6 +2529,20 @@ func (eng *Engine) searchTree(α, β, depth int32) int32 {
 
 	eng.stack.GenerateMoves(All, hash)
 	for move := eng.stack.PopMove(); move != NullMove; move = eng.stack.PopMove() {
+		// skip moves that are on the ignore list
+		if len(ignoremoves) > 0 {
+			found := false
+			for _ , im := range ignoremoves {
+				if move == im {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+		}
+
 		critical := move == hash || eng.stack.IsKiller(move)
 		if move.IsQuiet() {
 			numQuiet++ // TODO: move from here
@@ -2650,17 +2665,17 @@ func (eng *Engine) tryMove(α, β, depth, lmr int32, nullWindow bool, move Move)
 
 	score := α + 1
 	if lmr > 0 { // reduce late moves
-		score = -eng.searchTree(-α-1, -α, depth-lmr)
+		score = -eng.searchTree(-α-1, -α, depth-lmr, []Move{})
 	}
 
 	if score > α { // if late move reduction is disabled or has failed
 		if nullWindow {
-			score = -eng.searchTree(-α-1, -α, depth)
+			score = -eng.searchTree(-α-1, -α, depth, []Move{})
 			if α < score && score < β {
-				score = -eng.searchTree(-β, -α, depth)
+				score = -eng.searchTree(-β, -α, depth, []Move{})
 			}
 		} else {
-			score = -eng.searchTree(-β, -α, depth)
+			score = -eng.searchTree(-β, -α, depth, []Move{})
 		}
 	}
 
@@ -2675,9 +2690,10 @@ func (eng *Engine) tryMove(α, β, depth, lmr int32, nullWindow bool, move Move)
 // -> eng *Engine : engine
 // -> depth int32 : depth
 // -> estimated int32 : the score from previous depths
+// -> ignoremoves []Move : list of moves that should not be searched
 // <- int32 : score from current side to move POV
 
-func (eng *Engine) search(depth, estimated int32) int32 {
+func (eng *Engine) search(depth, estimated int32, ignoremoves []Move) int32 {
 	// this method only implements aspiration windows
 	// the gradual widening algorithm is the one used by RobboLito
 	// and Stockfish and it is explained here:
@@ -2695,7 +2711,7 @@ func (eng *Engine) search(depth, estimated int32) int32 {
 
 	for !eng.stopped {
 		// at root a non-null move is required, cannot prune based on null-move
-		score = eng.searchTree(α, β, depth)
+		score = eng.searchTree(α, β, depth, ignoremoves)
 		if score <= α {
 			α = max(α-δ, -InfinityScore)
 			δ += δ / 2
@@ -2717,13 +2733,14 @@ func (eng *Engine) search(depth, estimated int32) int32 {
 // returns the 
 // -> eng *Engine : engine
 // -> tc *TimeControl : time control, should already be started
+// -> ignoremoves []Move : list of moves that shold be ignored in search
 // <- moves []Move : principal variation, that is
 //  moves[0] is the best move found and
 //  moves[1] is the pondering move
 //  if no move was found because the game has finished
 //  then an empty pv is returned
 
-func (eng *Engine) Play(tc *TimeControl) (moves []Move) {
+func (eng *Engine) Play(tc *TimeControl, ignoremoves []Move) (moves []Move) {
 	eng.Log.BeginSearch()
 	eng.Stats = Stats{Depth: -1}
 
@@ -2742,7 +2759,7 @@ func (eng *Engine) Play(tc *TimeControl) (moves []Move) {
 		}
 
 		eng.Stats.Depth = depth
-		score = eng.search(depth, score)
+		score = eng.search(depth, score, ignoremoves)
 
 		if !eng.stopped {
 			// if eng has not been stopped then this is a legit pv
