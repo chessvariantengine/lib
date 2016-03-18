@@ -350,6 +350,9 @@ var Rand=rand.New(rand.NewSource(time.Now().UnixNano()))
 // dont print pv
 var DontPrintPV = false
 
+// max book depth
+const MAX_BOOK_DEPTH = 15
+
 // end definitions
 ///////////////////////////////////////////////
 
@@ -488,7 +491,7 @@ func (pos *Position) BookLineMoves() []Move {
 	mentrylist := pos.GetSortedMoveEntryList()
 	line := []Move{}
 	cnt := 0
-	for ( len(mentrylist) > 0 ) && ( cnt <= 10 ) {
+	for ( len(mentrylist) > 0 ) && ( cnt <= MAX_BOOK_DEPTH ) {
 		algeb := mentrylist[0].Algeb
 		move , err := pos.UCIToMove(algeb)
 		if err == nil {
@@ -554,10 +557,8 @@ func (pos *Position) BookMovesToPrintable() string {
 	buff += "\n"
 	for _ , mentry := range pentry.GetSortedMoveEntryList() {
 		algeb := mentry.Algeb
-		fmt.Printf("algeb %s\n",algeb)
 		move , err := pos.UCIToMove(algeb)
 		if err == nil {
-			fmt.Printf("algeb ok\n")
 			pos.DoMove(move)
 			buff += fmt.Sprintf("%s %s\n",mentry.ToPrintable(),pos.CalcLine(pos.BookLineMoves()))
 			pos.UndoMove()
@@ -668,7 +669,7 @@ func LoadBook() {
 // AddNodeRecursive : add node recursive
 // -> depth int : depth
 
-var SelectLimits = [15]int{80,70,60,50,45,40,35,30,25,20,15,10,10,10,10}
+var SelectLimits = [MAX_BOOK_DEPTH]int{80,50,40,30,20,10,5,5,5,5,5,5,5,5,5}
 
 func TruncLine(line string) string {
 	if len(line) < 60 {
@@ -678,12 +679,12 @@ func TruncLine(line string) string {
 }
 
 func AddNodeRecursive(depth int, line string) {
-	if depth >= 15 {
+	if depth >= MAX_BOOK_DEPTH {
 		return
 	}
 	mentrylist := uci.Engine.Position.GetSortedMoveEntryList()
 	if len(mentrylist) <= 0 {
-		fmt.Printf("\rappend move to %-60s\r", TruncLine(line))
+		fmt.Printf("\r- %-65s\r", TruncLine(line))
 		AddMove()
 	} else {
 		selected := false
@@ -703,7 +704,7 @@ func AddNodeRecursive(depth int, line string) {
 			}
 		}
 		if !selected {
-			fmt.Printf("\radding move to %-60s\r", TruncLine(line))
+			fmt.Printf("\r+ %-65s\r", TruncLine(line))
 			AddMove()
 		}
 	}
@@ -718,7 +719,7 @@ func AddNodeRecursive(depth int, line string) {
 
 func MinimaxOut(depth int) int {
 	alpha := int(-InfinityScore)
-	if depth > 15 {
+	if depth >= MAX_BOOK_DEPTH {
 		return alpha
 	}
 	pos := uci.Engine.Position
@@ -760,7 +761,7 @@ func BuildBook() {
 	DontPrintPV = true
 	cnt := 0
 	for !BuildBookStopped {
-		AddNodeRecursive(0,"current pos")
+		AddNodeRecursive(0,"*")
 		cnt++
 		if cnt >= 10 {
 			fmt.Printf("\nminimaxing out\n")
@@ -985,7 +986,7 @@ func ExecuteTest() error {
 			AddMove()
 			return errTestOk
 		case "an":
-			AddNodeRecursive(0,"current pos")
+			AddNodeRecursive(0,"*")
 			return errTestOk
 		case "bb":
 			StartBuildBook()
