@@ -467,6 +467,20 @@ func (pos *Position) GetBookMoveList() []Move {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// SignedScore : signed version of score as string
+// -> score int : score
+// <- string : signed score
+
+func SignedScore(score int) string {
+	if score <= 0 {
+		return fmt.Sprintf("%d",score)
+	}
+	return fmt.Sprintf("+%d",score)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // ToPrintable : move entry in printable form
 // -> mentry *BookMoveEntry : move entry
 // <- string : move entry printable
@@ -474,10 +488,12 @@ func (pos *Position) GetBookMoveList() []Move {
 func (mentry *BookMoveEntry) ToPrintable() string {
 	evalstr := "?"
 	if mentry.HasEval {
-		evalstr = fmt.Sprintf("%d", mentry.Eval)
+		evalstr = SignedScore(mentry.Eval)
 	}
-	return fmt.Sprintf("%6s d%3d v%3d S%5d E%5s",
-		mentry.Algeb, mentry.Depth, mentry.BookVersion, mentry.Score, evalstr)
+	//return fmt.Sprintf("%6s d%3d v%3d S%5d E%5s",
+	return fmt.Sprintf("%6s %5s",
+		//mentry.Algeb, mentry.Depth, mentry.BookVersion, mentry.Score, evalstr)
+		mentry.Algeb, evalstr)
 }
 
 ///////////////////////////////////////////////
@@ -555,13 +571,17 @@ func (pos *Position) BookMovesToPrintable() string {
 		return buff
 	}
 	buff += "\n"
+	cnt := 0
 	for _ , mentry := range pentry.GetSortedMoveEntryList() {
 		algeb := mentry.Algeb
 		move , err := pos.UCIToMove(algeb)
 		if err == nil {
-			pos.DoMove(move)
-			buff += fmt.Sprintf("%s %s\n",mentry.ToPrintable(),pos.CalcLine(pos.BookLineMoves()))
-			pos.UndoMove()
+			if cnt < 10 {
+				pos.DoMove(move)
+				buff += fmt.Sprintf("%s %s\n",mentry.ToPrintable(),pos.CalcLine(pos.BookLineMoves()))
+				pos.UndoMove()
+				cnt ++
+			}
 		}
 	}
 	return buff
