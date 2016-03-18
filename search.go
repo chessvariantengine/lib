@@ -1399,6 +1399,11 @@ func (pos *Position) ThreeFoldRepetition() int {
 // <- int32 : score
 // <- bool : true if game ended
 
+// need to export this
+func (eng *Engine) EndPosition() (int32, bool) {
+	return eng.endPosition()
+}
+
 func (eng *Engine) endPosition() (int32, bool) {
 	pos := eng.Position // shortcut
 	// in horde all pawns captured for the pawns side is mate

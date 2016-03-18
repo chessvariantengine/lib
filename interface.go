@@ -311,10 +311,21 @@ type BookMoveEntry struct {
 	HasEval bool
 	// eval determined by minimaxing
 	Eval int
+	// nodes used to calculate this eval ( this is book nodes )
+	Nodes int
+	// reserved for future use
+	Int1 int
+	Int2 int
+	Int3 int
+	Str1 string
+	Str2 string
+	Str3 string
 }
 
 // book entry holds all evaluated moves for a given position
 type BookPositionEntry struct {
+	// fen
+	Fen string
 	// move entries
 	// key for move entries is move in algebraic notation
 	MoveEntries map[string]BookMoveEntry
@@ -534,6 +545,7 @@ func (pos *Position) StoreMoveEntry(algeb string, mentry BookMoveEntry) {
 		}
 	}
 	pentry.MoveEntries[algeb] = mentry
+	pentry.Fen = pos.String()
 	Book.PositionEntries[pos.ZobristStr()] = pentry
 }
 
@@ -556,6 +568,7 @@ func SaveBook() {
 	if err!=nil {
 		panic(err)
 	} else {
+		//b , err := json.MarshalIndent(Book, "", "    ")
 		b , err := json.Marshal(Book)
 		if err != nil {
 			panic(err)
@@ -589,13 +602,20 @@ func LoadBook() {
 
 var SelectLimits = [15]int{80,70,60,50,45,40,35,30,25,20,15,10,10,10,10}
 
+func TruncLine(line string) string {
+	if len(line) < 30 {
+		return line
+	}
+	return "..."+line[len(line)-30:]
+}
+
 func AddNodeRecursive(depth int, line string) {
 	if depth >= 15 {
 		return
 	}
 	mentrylist := uci.Engine.Position.GetSortedMoveEntryList()
 	if len(mentrylist) <= 0 {
-		fmt.Printf("appending move to %s\n", line)
+		fmt.Printf("\rappend move to %-40s\r", TruncLine(line))
 		AddMove()
 	} else {
 		selected := false
@@ -615,7 +635,7 @@ func AddNodeRecursive(depth int, line string) {
 			}
 		}
 		if !selected {
-			fmt.Printf("adding new move to %s\n", line)
+			fmt.Printf("\radding move to %-40s\r", TruncLine(line))
 			AddMove()
 		}
 	}
@@ -675,7 +695,7 @@ func BuildBook() {
 		AddNodeRecursive(0,"current pos")
 		cnt++
 		if cnt >= 10 {
-			fmt.Printf("minimaxing out\n")
+			fmt.Printf("\nminimaxing out\n")
 			MinimaxOut(0)
 			ExecuteLine("pb")
 			cnt = 0
@@ -704,6 +724,9 @@ func StartBuildBook() {
 func StopBuildBook() {
 	BuildBookStopped = true
 	<- BuildBookReady
+	fmt.Printf("book building stopped\n")
+	MinimaxOut(0)
+	ExecuteLine("pb")
 }
 
 ///////////////////////////////////////////////
@@ -714,9 +737,21 @@ func StopBuildBook() {
 var AddMoveChan chan int
 
 func AddMove() {
-	IgnoreMoves = uci.Engine.Position.GetBookMoveList()
+	pos := uci.Engine.Position
 
-	LegalMoves := uci.Engine.Position.GetLegalMoves(GET_ALL)
+	_ , final := uci.Engine.EndPosition()
+
+	if final {
+		return
+	}
+
+	IgnoreMoves = pos.GetBookMoveList()
+
+	LegalMoves := pos.GetLegalMoves(GET_ALL)
+
+	if len(LegalMoves) <= 0 {
+		return
+	}
 
 	if len(IgnoreMoves) >= len(LegalMoves) {
 		// if all moves were already searched, nothing to do
@@ -2012,7 +2047,6 @@ func (uci *UCI) play() {
 							Eval : 0,
 						}
 						uci.Engine.Position.StoreMoveEntry(algeb, umentry)
-						fmt.Printf("stored move %s score %d\n", algeb, LastScore)
 					}
 				}
 			}
