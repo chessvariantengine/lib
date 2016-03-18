@@ -473,8 +473,68 @@ func (mentry *BookMoveEntry) ToPrintable() string {
 	if mentry.HasEval {
 		evalstr = fmt.Sprintf("%d", mentry.Eval)
 	}
-	return fmt.Sprintf("%6s ( d : %3d , v : %3d ) score : %5d , eval : %5s\n",
+	return fmt.Sprintf("%6s d%3d v%3d S%5d E%5s",
 		mentry.Algeb, mentry.Depth, mentry.BookVersion, mentry.Score, evalstr)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// BookLineMoves : calculates book line moves for position
+// -> pos *Position : position
+// <- []Move : line
+
+func (pos *Position) BookLineMoves() []Move {
+	mentrylist := pos.GetSortedMoveEntryList()
+	line := []Move{}
+	cnt := 0
+	for ( len(mentrylist) > 0 ) && ( cnt <= 10 ) {
+		algeb := mentrylist[0].Algeb
+		move , err := pos.UCIToMove(algeb)
+		if err == nil {
+			cnt++
+			line = append(line,move)
+			pos.DoMove(move)
+			mentrylist = pos.GetSortedMoveEntryList()
+		} else {
+			for i := 0 ; i < cnt ; i++ {
+				pos.UndoMove()
+			}
+			return line
+		}
+	}
+	for i := 0 ; i < cnt ; i++ {
+		pos.UndoMove()
+	}
+	return line
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// CalcLine : calculate line from move list
+// -> pos *Position : position
+// -> moves []Move : move list
+// <- string : line
+
+func (pos *Position) CalcLine(moves []Move) string {
+	if len(moves) <= 0 {
+		return "*"
+	}
+	line := ""
+	for i , move := range moves {
+		algeb := move.UCI()
+		pos.DoMove(move)
+		if i==0 {
+			line = algeb
+		} else {
+			line += " "+algeb
+		}
+	}
+	for range moves {
+		pos.UndoMove()
+	}
+	return line
 }
 
 ///////////////////////////////////////////////
@@ -493,7 +553,15 @@ func (pos *Position) BookMovesToPrintable() string {
 	}
 	buff += "\n"
 	for _ , mentry := range pentry.GetSortedMoveEntryList() {
-		buff += mentry.ToPrintable()
+		algeb := mentry.Algeb
+		fmt.Printf("algeb %s\n",algeb)
+		move , err := pos.UCIToMove(algeb)
+		if err == nil {
+			fmt.Printf("algeb ok\n")
+			pos.DoMove(move)
+			buff += fmt.Sprintf("%s %s\n",mentry.ToPrintable(),pos.CalcLine(pos.BookLineMoves()))
+			pos.UndoMove()
+		}
 	}
 	return buff
 }
@@ -603,10 +671,10 @@ func LoadBook() {
 var SelectLimits = [15]int{80,70,60,50,45,40,35,30,25,20,15,10,10,10,10}
 
 func TruncLine(line string) string {
-	if len(line) < 30 {
+	if len(line) < 60 {
 		return line
 	}
-	return "..."+line[len(line)-30:]
+	return "..."+line[len(line)-60:]
 }
 
 func AddNodeRecursive(depth int, line string) {
@@ -615,7 +683,7 @@ func AddNodeRecursive(depth int, line string) {
 	}
 	mentrylist := uci.Engine.Position.GetSortedMoveEntryList()
 	if len(mentrylist) <= 0 {
-		fmt.Printf("\rappend move to %-40s\r", TruncLine(line))
+		fmt.Printf("\rappend move to %-60s\r", TruncLine(line))
 		AddMove()
 	} else {
 		selected := false
@@ -635,7 +703,7 @@ func AddNodeRecursive(depth int, line string) {
 			}
 		}
 		if !selected {
-			fmt.Printf("\radding move to %-40s\r", TruncLine(line))
+			fmt.Printf("\radding move to %-60s\r", TruncLine(line))
 			AddMove()
 		}
 	}
