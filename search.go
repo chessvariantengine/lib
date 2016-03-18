@@ -36,10 +36,25 @@ var KING_ADVANCE_VALUE int32    = 250
 var KNIGHT_ADVANCE_VALUE int32  = 5
 
 // atomic pawn bonus
-var ATOMIC_PAWN_BONUS           = 125
+var ATOMIC_PAWN_BONUS           = 225
+
+// atomic pawn bonus
+var ATOMIC_QUEEN_BONUS          = 125
+
+// atomic king attack bonus
+var ATOMIC_KING_ATTACK_BONUS    = 45
+
+// atomic mobility bonus
+var ATOMIC_MOBILITY_BONUS int32 = 12
 
 // atomic pawn bonus score
 var ATOMIC_PAWN_BONUS_SCORE     = Score{ M: int32(ATOMIC_PAWN_BONUS*128) , E: int32(ATOMIC_PAWN_BONUS*128) }
+
+// atomic pawn bonus score
+var ATOMIC_QUEEN_BONUS_SCORE    = Score{ M: int32(ATOMIC_QUEEN_BONUS*128) , E: int32(ATOMIC_QUEEN_BONUS*192) }
+
+// atomic king attack bonus score
+var ATOMIC_KING_ATTACK_BONUS_SCORE = Score{ M: int32(ATOMIC_KING_ATTACK_BONUS*128) , E: int32(ATOMIC_KING_ATTACK_BONUS*128) }
 
 // horde pawn scores
 var HORDE_PAWN_SCORES [ColorArraySize]Score
@@ -1018,7 +1033,7 @@ func (e *Eval) AddN(s Score, n int32) {
 	// NEW
 	// in atomic increase mobility score
 	if IS_Atomic {
-		n = n * 16
+		n = n * ATOMIC_MOBILITY_BONUS
 	}
 	// END NEW
 	///////////////////////////////////////////////
@@ -1176,6 +1191,12 @@ func evaluateSide(pos *Position, us Color, eval *Eval) {
 			bb.Pop()
 			eval.Add(ATOMIC_PAWN_BONUS_SCORE)
 		}
+		for bb := pos.ByPiece(us, Queen); bb > 0; {
+			bb.Pop()
+			eval.Add(ATOMIC_QUEEN_BONUS_SCORE)
+		}
+		// add bonus for squares attacked around opponent king
+		eval.Add(ATOMIC_KING_ATTACK_BONUS_SCORE.Multiply(int32(pos.NumKingAttackers(them))))
 	}
 
 	// Knight

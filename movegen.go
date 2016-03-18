@@ -3549,6 +3549,30 @@ func (pos *Position) IsCheckedLocal(side Color) bool {
 ///////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////
+// NumKingAttackers : number of squares attacked around side's king
+// -> pos *Position : position
+// -> side Color : side
+// <- int : number of squares attacked
+
+func (pos *Position) NumKingAttackers(side Color) int {
+	kingSq := pos.ByPiece(side, King).AsSquare()
+	numattacked := 0
+	for _ , sq := range explosionsquares[kingSq] {
+		if pos.GetAttacker(sq, side.Opposite()) != NoFigure {
+			numattacked += 2
+		}
+		for _ , sq2 := range explosionsquares[sq] {
+			if pos.GetAttacker(sq2, side.Opposite()) != NoFigure {
+				numattacked ++
+			}
+		}
+	}
+	return numattacked
+}
+
+///////////////////////////////////////////////////
+
+///////////////////////////////////////////////////
 // IsExploded : is the king of side exploded
 // -> pos *Position : position
 // -> side Color : side
