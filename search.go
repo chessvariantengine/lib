@@ -36,7 +36,7 @@ var KING_ADVANCE_VALUE int32    = 250
 var KNIGHT_ADVANCE_VALUE int32  = 5
 
 // atomic pawn bonus
-var ATOMIC_PAWN_BONUS           = 150
+var ATOMIC_PAWN_BONUS           = 125
 
 // atomic pawn bonus score
 var ATOMIC_PAWN_BONUS_SCORE     = Score{ M: int32(ATOMIC_PAWN_BONUS*128) , E: int32(ATOMIC_PAWN_BONUS*128) }
@@ -1018,7 +1018,7 @@ func (e *Eval) AddN(s Score, n int32) {
 	// NEW
 	// in atomic increase mobility score
 	if IS_Atomic {
-		n = n * 10
+		n = n * 16
 	}
 	// END NEW
 	///////////////////////////////////////////////
