@@ -483,17 +483,25 @@ func SignedScore(score int) string {
 ///////////////////////////////////////////////
 // ToPrintable : move entry in printable form
 // -> mentry *BookMoveEntry : move entry
+// -> pos *Position : if position is not nil the LAN notation will be used
 // <- string : move entry printable
 
-func (mentry *BookMoveEntry) ToPrintable() string {
+func (mentry *BookMoveEntry) ToPrintable(pos *Position) string {
 	evalstr := "?"
 	if mentry.HasEval {
 		evalstr = SignedScore(mentry.Eval)
 	}
+	mstr := mentry.Algeb
+	if pos != nil {
+		move , err := pos.UCIToMove(mstr)
+		if err == nil {
+			mstr = move.LAN()
+		}
+	}
 	//return fmt.Sprintf("%6s d%3d v%3d S%5d E%5s",
-	return fmt.Sprintf("%6s %5s",
+	return fmt.Sprintf("%8s %5s",
 		//mentry.Algeb, mentry.Depth, mentry.BookVersion, mentry.Score, evalstr)
-		mentry.Algeb, evalstr)
+		mstr, evalstr)
 }
 
 ///////////////////////////////////////////////
@@ -565,7 +573,7 @@ func (pos *Position) CalcLine(moves []Move) string {
 
 func (pos *Position) BookMovesToPrintable() string {
 	pentry , found := pos.GetBookEntry()
-	buff := "book moves for position :"
+	buff := fmt.Sprintf("book moves for position ( book size %d positions ) :", len(Book.PositionEntries))
 	if !found {
 		buff += " <none>\n"
 		return buff
@@ -577,8 +585,9 @@ func (pos *Position) BookMovesToPrintable() string {
 		move , err := pos.UCIToMove(algeb)
 		if err == nil {
 			if cnt < 10 {
+				mep := mentry.ToPrintable(pos)
 				pos.DoMove(move)
-				buff += fmt.Sprintf("%s %s\n",mentry.ToPrintable(),pos.CalcLine(pos.BookLineMoves()))
+				buff += fmt.Sprintf("%s %s\n", mep, pos.CalcLine(pos.BookLineMoves()))
 				pos.UndoMove()
 				cnt ++
 			}
