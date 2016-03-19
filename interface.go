@@ -353,6 +353,9 @@ var DontPrintPV = false
 // max book depth
 const MAX_BOOK_DEPTH = 15
 
+// use book instead of search where available
+var UseBook = false
+
 // end definitions
 ///////////////////////////////////////////////
 
@@ -1875,6 +1878,7 @@ func (uci *UCI) uci(line string) error {
 	fmt.Printf("id author Alexandru Mosoi\n")
 	fmt.Printf("\n")
 	fmt.Printf("option name ClearHash type button\n")
+	fmt.Printf("option name UseBook type button\n")
 	if IS_Racing_Kings {
 		for piece:=Knight ; piece<King ; piece++ {
 			fmt.Printf("option name %s Value type spin default %d min 0 max 1000\n", 
@@ -1968,6 +1972,18 @@ func (uci *UCI) position(line string) error {
 // <- error : error
 
 func (uci *UCI) go_(line string) error {
+	if UseBook {
+		pos := uci.Engine.Position
+		mentrylist := pos.GetSortedMoveEntryList()
+		if ( len(mentrylist) > 0 ) && UseBook {
+			algeb := mentrylist[0].Algeb
+			_ , err := pos.UCIToMove(algeb)
+			if err == nil {
+				Printu(fmt.Sprintf("info depth 0 time 0 pv %s\nbestmove %s\n", algeb, algeb))
+				return nil
+			}
+		}
+	}
 	// TODO: handle panic for `go depth`
 	predicted := uci.predicted == uci.Engine.Position.Zobrist()
 	uci.timeControl = NewTimeControl(uci.Engine.Position, predicted)
@@ -2188,6 +2204,10 @@ func (uci *UCI) setoption(line string) error {
 	switch option[1] {
 	case "ClearHash":
 		GlobalHashTable.Clear()
+		return nil
+	case "UseBook":
+		LoadBook()
+		UseBook = true
 		return nil
 	case "StartBuildBook":
 		StartBuildBook()
