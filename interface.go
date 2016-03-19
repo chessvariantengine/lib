@@ -1976,10 +1976,11 @@ func (uci *UCI) go_(line string) error {
 		pos := uci.Engine.Position
 		mentrylist := pos.GetSortedMoveEntryList()
 		if ( len(mentrylist) > 0 ) && UseBook {
-			algeb := mentrylist[0].Algeb
+			mentry := mentrylist[0]
+			algeb := mentry.Algeb
 			_ , err := pos.UCIToMove(algeb)
 			if err == nil {
-				Printu(fmt.Sprintf("info depth 0 time 0 pv %s\nbestmove %s\n", algeb, algeb))
+				Printu(fmt.Sprintf("info depth 0 time 0 score cp %d pv %s\nbestmove %s\n", mentry.GetEval(), algeb, algeb))
 				return nil
 			}
 		}
