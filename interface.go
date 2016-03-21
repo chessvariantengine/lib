@@ -351,7 +351,7 @@ var Rand=rand.New(rand.NewSource(time.Now().UnixNano()))
 var DontPrintPV = false
 
 // max book depth
-const MAX_BOOK_DEPTH = 15
+const MAX_BOOK_DEPTH = 25
 
 // use book instead of search where available
 var UseBook = false

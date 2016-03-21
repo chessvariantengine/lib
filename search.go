@@ -39,10 +39,10 @@ var KNIGHT_ADVANCE_VALUE int32  = 5
 var ATOMIC_PAWN_BONUS           = 225
 
 // atomic pawn bonus
-var ATOMIC_QUEEN_BONUS          = 125
+var ATOMIC_QUEEN_BONUS          = 275
 
 // atomic king attack bonus
-var ATOMIC_KING_ATTACK_BONUS    = 45
+var ATOMIC_KING_ATTACK_BONUS    = 75
 
 // atomic mobility bonus
 var ATOMIC_MOBILITY_BONUS int32 = 12
