@@ -356,6 +356,15 @@ const MAX_BOOK_DEPTH = 15
 // use book instead of search where available
 var UseBook = false
 
+// flag indicating that a book has been loaded
+var BookLoaded = false
+
+// count miminaxing
+var MinimaxCnt = 0
+
+// save book after certain number of minimaxes
+var SaveBookAfterMinimaxCnt = 5
+
 // end definitions
 ///////////////////////////////////////////////
 
@@ -693,6 +702,7 @@ func LoadBook() {
 	if err != nil {
 		panic(err)
 	}
+	BookLoaded = true
 }
 
 ///////////////////////////////////////////////
@@ -796,9 +806,14 @@ func BuildBook() {
 		AddNodeRecursive(0,"*")
 		cnt++
 		if cnt >= 10 {
-			fmt.Printf("\nminimaxing out\n")
+			MinimaxCnt++
+			fmt.Printf("\nminimaxing out ( number of minimaxes %d )\n", MinimaxCnt)
 			MinimaxOut(0)
 			ExecuteLine("pb")
+			if BookLoaded && ( ( MinimaxCnt % SaveBookAfterMinimaxCnt ) == 0 ) {
+				fmt.Printf("saving book\n")
+				SaveBook()
+			}
 			cnt = 0
 		}
 	}
@@ -825,8 +840,8 @@ func StartBuildBook() {
 func StopBuildBook() {
 	BuildBookStopped = true
 	<- BuildBookReady
-	fmt.Printf("book building stopped\n")
 	MinimaxOut(0)
+	fmt.Printf("book building stopped\n")
 	ExecuteLine("pb")
 }
 
