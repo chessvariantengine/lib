@@ -295,7 +295,7 @@ var StoreMinDepth = 12
 // book version : should be stored together with engine score in the book
 // if the engine is modified a higher book version can signal
 // that scores with lower version number should be overwritten
-var BookVersion int = 1
+var BookVersion int = 2
 
 // book move entry holds the evaluation of single move
 type BookMoveEntry struct {
@@ -642,6 +642,18 @@ func (pos *Position) GetMoveEntry(algeb string) ( BookMoveEntry , bool ) {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// DeletePositionEntryMoves : delete moves in a position entry
+// -> pos *Position : position
+
+func (pos *Position) DeletePositionEntryMoves() {
+	Book.PositionEntries[pos.ZobristStr()] = BookPositionEntry{
+		MoveEntries : make(map[string]BookMoveEntry),
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // StoreMoveEntry : store move entry for move
 // -> pos *Position : position
 // -> algeb string : move in algebraic notation
@@ -724,7 +736,8 @@ func AddNodeRecursive(depth int, line string) {
 	if depth >= MAX_BOOK_DEPTH {
 		return
 	}
-	mentrylist := uci.Engine.Position.GetSortedMoveEntryList()
+	pos := uci.Engine.Position
+	mentrylist := pos.GetSortedMoveEntryList()
 	if len(mentrylist) <= 0 {
 		fmt.Printf("\r- %-65s\r", TruncLine(line))
 		AddMove()
@@ -734,7 +747,11 @@ func AddNodeRecursive(depth int, line string) {
 			algeb := mentry.Algeb
 			r := Rand.Intn(100)
 			limit := SelectLimits[depth]
-			if r > limit {
+			version := mentry.BookVersion
+			if BookVersion > version {
+				pos.DeletePositionEntryMoves()
+				break
+			} else if r > limit {
 				move , err := uci.Engine.Position.UCIToMove(algeb)
 				if err == nil {
 					uci.Engine.DoMove(move)
@@ -841,8 +858,8 @@ func StopBuildBook() {
 	BuildBookStopped = true
 	<- BuildBookReady
 	MinimaxOut(0)
-	fmt.Printf("book building stopped\n")
 	ExecuteLine("pb")
+	fmt.Printf("book building stopped\n")
 }
 
 ///////////////////////////////////////////////
