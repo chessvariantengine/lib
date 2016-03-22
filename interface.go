@@ -706,20 +706,52 @@ func SaveBook() {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// SaveBookVerbose : saves Book to disk and reports it
+
+func SaveBookVerbose() {
+	fmt.Printf("saving book ... ")
+	SaveBook()
+	fmt.Printf("done\n")
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // SaveBookAuto : saves Book to disk if book has been loaded from disk before
 
 func SaveBookAuto() {
 	if BookLoaded {
-		fmt.Printf("auto saving book ... ")
 		SaveBook()
-		fmt.Printf("done\n")
 	}
 }
 
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// SaveBook : saves Book to disk
+// SaveBookAuto : saves Book to disk if book has been loaded from disk before and reports it
+
+func SaveBookAutoVerbose() {
+	if BookLoaded {
+		fmt.Printf("auto ")
+		SaveBookVerbose()
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// LoadBookVerbose : loads Book from disk and reports is
+
+func LoadBookVerbose() {
+	fmt.Printf("loading book ... ")
+	LoadBook()
+	fmt.Printf("done\n")
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// LoadBook : loads Book from disk
 
 func LoadBook() {
 	jsonBlob , err := ioutil.ReadFile("book.txt")
@@ -869,6 +901,20 @@ func MinimaxOut() int {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// MinimaxOutVerbose : minimax out book wrt current position and report it
+// <- int : eval
+
+func MinimaxOutVerbose() int {
+	MinimaxNodes = 0	
+	fmt.Printf("minimaxing out ( no %d ) ... ", MinimaxCnt)
+	eval := MinimaxOutRecursive(0)
+	fmt.Printf("done ( nodes %d )\n", MinimaxNodes)
+	return eval
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // PrintBookPage : print book page
 
 func PrintBookPage() {
@@ -892,12 +938,11 @@ func BuildBook() {
 		cnt++
 		if cnt >= 10 {
 			MinimaxCnt++
-			fmt.Printf("\nminimaxing out ( number of minimaxes %d )\n", MinimaxCnt)
-			MinimaxOut()
-			fmt.Printf("minimaxing done ( number of nodes %d )\n", MinimaxNodes)
-			ExecuteLine("pb")
+			fmt.Println()
+			MinimaxOutVerbose()
+			PrintBookPage()
 			if ( MinimaxCnt % SaveBookAfterMinimaxCnt ) == 0 {				
-				SaveBookAuto()
+				SaveBookAutoVerbose()
 			}
 			cnt = 0
 		}
@@ -926,9 +971,9 @@ func StartBuildBook() {
 func StopBuildBook() {
 	BuildBookStopped = true
 	<- BuildBookReady
-	MinimaxOut()
-	ExecuteLine("pb")
-	SaveBookAuto()
+	MinimaxOutVerbose()
+	PrintBookPage()
+	SaveBookAutoVerbose()
 	fmt.Printf("book building stopped\n")
 	BookBuildingUnderWay = false
 }
@@ -1130,7 +1175,7 @@ func ExecuteTest() error {
 			if BookBuildingUnderWay {
 				StopBuildBook()
 			} else {
-				LoadBook()
+				LoadBookVerbose()
 				PrintBookPage()
 				StartBuildBook()
 			}
@@ -2321,18 +2366,6 @@ func (uci *UCI) setoption(line string) error {
 	case "UseBook":
 		LoadBook()
 		UseBook = true
-		return nil
-	case "StartBuildBook":
-		StartBuildBook()
-		return nil
-	case "StopBuildBook":
-		StopBuildBook()
-		return nil
-	case "LoadBook":
-		LoadBook()
-		return nil
-	case "SaveBook":
-		SaveBook()
 		return nil
 	}
 
