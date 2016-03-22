@@ -351,7 +351,7 @@ var Rand=rand.New(rand.NewSource(time.Now().UnixNano()))
 var DontPrintPV = false
 
 // max book depth
-const MAX_BOOK_DEPTH = 25
+const MAX_BOOK_DEPTH = 28
 
 // use book instead of search where available
 var UseBook = false
@@ -364,6 +364,9 @@ var MinimaxCnt = 0
 
 // save book after certain number of minimaxes
 var SaveBookAfterMinimaxCnt = 5
+
+// book building under way
+var BookBuildingUnderWay = false
 
 // end definitions
 ///////////////////////////////////////////////
@@ -703,6 +706,19 @@ func SaveBook() {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// SaveBookAuto : saves Book to disk if book has been loaded from disk before
+
+func SaveBookAuto() {
+	if BookLoaded {
+		fmt.Printf("auto saving book ... ")
+		SaveBook()
+		fmt.Printf("done\n")
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // SaveBook : saves Book to disk
 
 func LoadBook() {
@@ -723,7 +739,36 @@ func LoadBook() {
 // AddNodeRecursive : add node recursive
 // -> depth int : depth
 
-var SelectLimits = [MAX_BOOK_DEPTH]int{80,50,40,30,20,10,5,5,5,5,5,5,5,5,5}
+var SelectLimits = [MAX_BOOK_DEPTH]int{
+	90, // 1
+	80, // 2
+	70, // 3
+	60, // 4
+	50, // 5
+	40, // 6
+	30, // 7
+	20, // 8
+	10, // 9
+	10, // 10
+	10, // 11
+	10, // 12
+	10, // 13
+	10, // 14
+	10, // 15
+	10, // 16
+	10, // 17
+	10, // 18
+	10, // 19
+	10, // 20
+	10, // 21
+	10, // 22
+	10, // 23
+	10, // 24
+	10, // 25
+	10, // 26
+	10, // 27
+	10, // 28
+}
 
 func TruncLine(line string) string {
 	if len(line) < 60 {
@@ -772,11 +817,14 @@ func AddNodeRecursive(depth int, line string) {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
-// MinimaxOut : minimax out book wrt current position
+// MinimaxOut : minimax out book wrt current position recursively
 // -> depth int : depth
 // <- int : eval
 
-func MinimaxOut(depth int) int {
+var MinimaxNodes = 0
+
+func MinimaxOutRecursive(depth int) int {
+	MinimaxNodes++
 	alpha := int(-InfinityScore)
 	if depth >= MAX_BOOK_DEPTH {
 		return alpha
@@ -789,7 +837,7 @@ func MinimaxOut(depth int) int {
 			move , err := pos.UCIToMove(algeb)
 			if err == nil {
 				uci.Engine.DoMove(move)
-				eval := -MinimaxOut(depth+1)
+				eval := -MinimaxOutRecursive(depth+1)
 				if eval == int(InfinityScore) {
 					eval = score
 				}
@@ -810,6 +858,26 @@ func MinimaxOut(depth int) int {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// MinimaxOut : minimax out book wrt current position
+// <- int : eval
+
+func MinimaxOut() int {
+	MinimaxNodes = 0
+	return MinimaxOutRecursive(0)
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// PrintBookPage : print book page
+
+func PrintBookPage() {
+	fmt.Print(uci.Engine.Position.BookMovesToPrintable())
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // BuildBook : build book, should be run in go routine
 
 var BuildBookStopped bool
@@ -825,11 +893,11 @@ func BuildBook() {
 		if cnt >= 10 {
 			MinimaxCnt++
 			fmt.Printf("\nminimaxing out ( number of minimaxes %d )\n", MinimaxCnt)
-			MinimaxOut(0)
+			MinimaxOut()
+			fmt.Printf("minimaxing done ( number of nodes %d )\n", MinimaxNodes)
 			ExecuteLine("pb")
-			if BookLoaded && ( ( MinimaxCnt % SaveBookAfterMinimaxCnt ) == 0 ) {
-				fmt.Printf("saving book\n")
-				SaveBook()
+			if ( MinimaxCnt % SaveBookAfterMinimaxCnt ) == 0 {				
+				SaveBookAuto()
 			}
 			cnt = 0
 		}
@@ -846,6 +914,7 @@ func BuildBook() {
 func StartBuildBook() {
 	BuildBookReady = make(chan int)
 	BuildBookStopped = false
+	BookBuildingUnderWay = true
 	go BuildBook()
 }
 
@@ -857,9 +926,11 @@ func StartBuildBook() {
 func StopBuildBook() {
 	BuildBookStopped = true
 	<- BuildBookReady
-	MinimaxOut(0)
+	MinimaxOut()
 	ExecuteLine("pb")
+	SaveBookAuto()
 	fmt.Printf("book building stopped\n")
+	BookBuildingUnderWay = false
 }
 
 ///////////////////////////////////////////////
@@ -1035,7 +1106,7 @@ func ExecuteTest() error {
 			uci.Engine.Position.PrintLegalMoves()
 			return errTestOk
 		case "pb":
-			fmt.Print(uci.Engine.Position.BookMovesToPrintable())
+			PrintBookPage()
 			return errTestOk
 		case "vs":
 			PrintPieceValues()
@@ -1054,6 +1125,15 @@ func ExecuteTest() error {
 			return errTestOk
 		case "bb":
 			StartBuildBook()
+			return errTestOk
+		case "q":
+			if BookBuildingUnderWay {
+				StopBuildBook()
+			} else {
+				LoadBook()
+				PrintBookPage()
+				StartBuildBook()
+			}
 			return errTestOk
 		case "bs":
 			StopBuildBook()
