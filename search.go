@@ -189,6 +189,10 @@ type Logger interface {
 	// PrintPV logs the principal variation after
 	// iterative deepening completed one depth
 	PrintPV(stats Stats, score int32, pv []Move)
+	// report info string
+	ReportInfoString(item MultiPVItem) string
+	// create multi pv item
+	CreateMultiPVItem(stats Stats, score int32, line []Move) MultiPVItem
 }
 
 // NulLogger is a logger that does nothing.
@@ -202,6 +206,14 @@ func (nl *NulLogger) EndSearch() {
 }
 
 func (nl *NulLogger) PrintPV(stats Stats, score int32, pv []Move) {
+}
+
+func (ul *NulLogger) ReportInfoString(item MultiPVItem) string {
+	return ""
+}
+
+func (ul *NulLogger) CreateMultiPVItem(stats Stats, score int32, line []Move) MultiPVItem {
+	return MultiPVItem{}
 }
 
 // historyEntry keeps counts of how well move performed in the past
@@ -2469,29 +2481,34 @@ func (eng *Engine) searchTree(α, β, depth int32, ignoremoves []Move) int32 {
 		return KnownWinScore
 	}
 
-	// check the transposition table
 	entry := eng.retrieveHash()
 	hash := entry.move
-	if entry.kind != noEntry && depth <= int32(entry.depth) {
-		if entry.kind == exact {
-			// simply return if the score is exact
-			// update principal variation table if possible
-			if α < entry.score && entry.score < β {
-				eng.pvTable.Put(pos, hash)
+
+	isfirstpv := ( MultiPVIndex <= 1 )
+
+	if isfirstpv || ( ( !isfirstpv ) && ( depth < CurrentSearchDepth ) ) {
+		// check the transposition table		
+		if entry.kind != noEntry && depth <= int32(entry.depth) {
+			if entry.kind == exact {
+				// simply return if the score is exact
+				// update principal variation table if possible
+				if α < entry.score && entry.score < β {
+					eng.pvTable.Put(pos, hash)
+				}
+				return entry.score
 			}
-			return entry.score
-		}
-		if entry.kind == failedLow && entry.score <= α {
-			// previously the move failed low so the actual score
-			// is at most entry.score, uf that's lower than α
-			// this will also fail low
-			return entry.score
-		}
-		if entry.kind == failedHigh && entry.score >= β {
-			// previously the move failed high so the actual score
-			// is at least entry.score, if that's higher than β
-			// this will also fail high
-			return entry.score
+			if entry.kind == failedLow && entry.score <= α {
+				// previously the move failed low so the actual score
+				// is at most entry.score, uf that's lower than α
+				// this will also fail low
+				return entry.score
+			}
+			if entry.kind == failedHigh && entry.score >= β {
+				// previously the move failed high so the actual score
+				// is at least entry.score, if that's higher than β
+				// this will also fail high
+				return entry.score
+			}
 		}
 	}
 
@@ -2777,6 +2794,7 @@ func (eng *Engine) Play(tc *TimeControl, ignoremoves []Move) (moves []Move) {
 	eng.stack.Reset(eng.Position)
 
 	score := int32(0)
+
 	for depth := int32(0); depth < 64; depth++ {
 		if !tc.NextDepth(depth) {
 			// stop if tc control says we are done
@@ -2785,13 +2803,58 @@ func (eng *Engine) Play(tc *TimeControl, ignoremoves []Move) (moves []Move) {
 		}
 
 		eng.Stats.Depth = depth
-		score = eng.search(depth, score, ignoremoves)
 
-		if !eng.stopped {
-			// if eng has not been stopped then this is a legit pv
-			moves = eng.pvTable.Get(eng.Position)
-			eng.Log.PrintPV(eng.Stats, score, moves)
+		CurrentSearchDepth = depth
+
+		legalmoves := eng.Position.GetLegalMoves(GET_ALL)
+		numlegalmoves := len(legalmoves)
+		ignoremovescurrent := ignoremoves
+
+		MultiPVList = []MultiPVItem{}
+
+		for MultiPVIndex = 1 ; MultiPVIndex <= MultiPV ; MultiPVIndex++ {
+
+			searchok := ( len(ignoremovescurrent) == 0 )
+
+			if !searchok {
+				if len(ignoremovescurrent) < numlegalmoves {
+					searchok = true
+				}
+			}
+
+			if searchok {
+			
+				score = eng.search(depth, score, ignoremovescurrent)
+
+				if !eng.stopped {
+					// if eng has not been stopped then this is a legit pv
+					moves = eng.pvTable.Get(eng.Position)
+
+					if len(moves) > 0 {
+						ignoremovescurrent = append(ignoremovescurrent, moves[0])
+					}
+
+					//eng.Log.PrintPV(eng.Stats, score, moves)
+					item := eng.Log.CreateMultiPVItem(eng.Stats, score, moves)
+
+					MultiPVList = append(MultiPVList, item)
+
+				}
+
+			}
+
 		}
+
+		MultiPVIndex = 1
+
+		MultiPVList.Sort()
+
+		for index := 0 ; index < len(MultiPVList) ; index ++ {
+			if Protocol == PROTOCOL_UCI {
+				Printu(fmt.Sprintf("info multipv %d %s", index+1, MultiPVList[index].InfoString))
+			}
+		}
+
 	}
 
 	eng.Log.EndSearch()

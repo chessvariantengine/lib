@@ -28,6 +28,7 @@ import(
 	"encoding/json"
 	"io/ioutil"
 	"math/rand"
+	"sort"
 )
 
 //////////////////////////////////////////////////////
@@ -48,6 +49,11 @@ func Run(variant int, protocol int) {
 	ClearLog()
 
 	ClearBook()
+
+	/*if protocol == PROTOCOL_XBOARD {
+		UseBook = true
+		LoadBook()
+	}*/
 
 	// create uci
 	uci = NewUCI()
@@ -368,7 +374,70 @@ var SaveBookAfterMinimaxCnt = 5
 // book building under way
 var BookBuildingUnderWay = false
 
+// multipv mode
+var MultiPV = 5
+
+// current multipv index
+var MultiPVIndex = 1
+
+// multipv item holds search information on a single pv line
+type MultiPVItem struct {
+	Stats Stats
+	Score int32
+	Line []Move
+	InfoString string
+}
+
+// multipv list holds all the pv items of the search
+type MultiPVItemList []MultiPVItem
+
+// list of all multipv items
+var MultiPVList MultiPVItemList
+
+// current search depth
+var CurrentSearchDepth int32
+
 // end definitions
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// MultiPVItemList sort interface
+
+func (ml *MultiPVItemList) Sort() {
+	sort.Sort(ml)
+}
+
+func (ml *MultiPVItemList) Len() int {
+	return len(*ml)
+}
+
+func (ml *MultiPVItemList) Less(i,j int) bool {
+	return (*ml)[i].Score > (*ml)[j].Score
+}
+
+func (ml *MultiPVItemList) Swap(i,j int) {
+	(*ml)[i] , (*ml)[j] = (*ml)[j] , (*ml)[i]
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// CreateMultiPVItem : creates a multipv item
+// -> ul *uciLogger : uci logger
+// -> stats Stats : engine stats
+// -> line []Move : line
+// <- MultiPVItem : created multipv item
+
+func (ul *uciLogger) CreateMultiPVItem(stats Stats, score int32, line []Move) MultiPVItem {
+	item := MultiPVItem{
+		Stats : stats,
+		Score : score,
+		Line : line,
+	}
+	item.InfoString=ul.ReportInfoString(item)
+	return item
+}
+
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
@@ -1697,9 +1766,10 @@ func (uci *UCI) XBOARD_Start_Thinking() error {
 	uci.ready <- struct{}{}
 
 	IgnoreMoves = []Move{}
-	go uci.play()
 
 	XBOARD_State = XBOARD_Thinking
+
+	go uci.play()
 
 	return nil
 }
@@ -1779,7 +1849,7 @@ func newUCILogger() *uciLogger {
 
 ///////////////////////////////////////////////
 // BeginSearch : begin search
-// -> *uciLogger : uci logger
+// -> ul *uciLogger : uci logger
 
 func (ul *uciLogger) BeginSearch() {
 	ul.start = time.Now()
@@ -1790,7 +1860,7 @@ func (ul *uciLogger) BeginSearch() {
 
 ///////////////////////////////////////////////
 // EndSearch : end search
-// -> *uciLogger : uci logger
+// -> ul *uciLogger : uci logger
 
 func (ul *uciLogger) EndSearch() {
 	ul.flush()
@@ -1798,7 +1868,7 @@ func (ul *uciLogger) EndSearch() {
 
 ///////////////////////////////////////////////
 // PrintPV : prints pv
-// -> *uciLogger : uci logger
+// -> ul *uciLogger : uci logger
 // -> stats Stats : stats
 // -> score int32 : score
 // -> pv []Move : pv
@@ -1880,8 +1950,78 @@ func (ul *uciLogger) PrintPV(stats Stats, score int32, pv []Move) {
 }
 
 ///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// ReportInfoString : reports info string of a pv item that can be sent to the gui
+// -> ul *uciLogger : uci logger
+// -> item *MultiPVItem : multipv item
+// <- string : info string
+
+func (ul *uciLogger) ReportInfoString(item MultiPVItem) string {
+	
+	if Protocol == PROTOCOL_XBOARD {
+		XBOARD_now := time.Now()
+		XBOARD_elapsed := uint64(maxDuration(XBOARD_now.Sub(ul.start), time.Microsecond))
+		XBOARD_millis := XBOARD_elapsed / uint64(time.Millisecond)
+		XBOARD_centis := XBOARD_millis * 10
+		XBOARD_score := item.Score
+		if XBOARD_score > KnownWinScore {
+			XBOARD_score = 100000 + (MateScore-XBOARD_score+1)/2
+		} else if XBOARD_score < KnownLossScore {
+			XBOARD_score = -100000 - (MatedScore-XBOARD_score)/2
+		}
+		buff := fmt.Sprintf("%d %d %d %d",
+			item.Stats.Depth,
+			XBOARD_score,
+			XBOARD_centis,
+			item.Stats.Nodes)
+		for _, m := range item.Line {
+			buff += fmt.Sprintf(" %v", m.UCI())
+		}
+		buff += "\n"
+		return buff
+	}
+
+	if Protocol == PROTOCOL_UCI {
+		buff := ""
+		// write depth
+		now := time.Now()
+		buff += fmt.Sprintf("depth %d seldepth %d ", item.Stats.Depth, item.Stats.SelDepth)
+
+		// write score
+		if item.Score > KnownWinScore {
+			buff += fmt.Sprintf("score mate %d ", (MateScore-item.Score+1)/2)
+		} else if item.Score < KnownLossScore {
+			buff += fmt.Sprintf("score mate %d ", (MatedScore-item.Score)/2)
+		} else {
+			buff += fmt.Sprintf("score cp %d ", item.Score)
+		}
+
+		// write stats
+		elapsed := uint64(maxDuration(now.Sub(ul.start), time.Microsecond))
+		nps := item.Stats.Nodes * uint64(time.Second) / elapsed
+		millis := elapsed / uint64(time.Millisecond)
+		buff += fmt.Sprintf("nodes %d time %d nps %d ", item.Stats.Nodes, millis, nps)
+
+		// write principal variation
+		buff += fmt.Sprintf("pv")
+		for _, m := range item.Line {
+			buff += fmt.Sprintf(" %v", m.UCI())
+		}
+		buff += "\n"
+
+		return buff
+	}
+
+	// we should not get here
+	return "?"
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // flush : flushes the buf to stdout
-// -> *uciLogger : uci logger
+// -> ul *uciLogger : uci logger
 
 func (ul *uciLogger) flush() {
 	os.Stdout.Write(ul.buf.Bytes())
@@ -2034,6 +2174,7 @@ func (uci *UCI) uci(line string) error {
 	fmt.Printf("id name %s\n",GetEngineName())
 	fmt.Printf("id author Alexandru Mosoi\n")
 	fmt.Printf("\n")
+	fmt.Printf("option name MultiPV type spin default 1 min 1 max 500\n")
 	fmt.Printf("option name ClearHash type button\n")
 	fmt.Printf("option name UseBook type button\n")
 	if IS_Racing_Kings {
@@ -2248,6 +2389,29 @@ func (uci *UCI) stop(line string) error {
 // -> ignoremoves []Move : list of moves that should be ignored
 
 func (uci *UCI) play() {
+
+	/*if UseBook && Protocol == PROTOCOL_XBOARD {
+		pos := uci.Engine.Position
+		mentrylist := pos.GetSortedMoveEntryList()
+		if ( len(mentrylist) > 0 ) {
+			mentry := mentrylist[0]
+			algeb := mentry.Algeb
+			move , err := pos.UCIToMove(algeb)
+			if err == nil {
+				uci.ponder <- struct{}{}
+				<-uci.ponder
+
+				Printu(fmt.Sprintf("move %s\n", algeb))
+				uci.Engine.DoMove(move)
+				XBOARD_State = XBOARD_Pondering
+
+				<-uci.ready
+				AddMoveChan <- 0
+				return
+			}
+		}
+	}*/
+
 	moves := uci.Engine.Play(uci.timeControl, IgnoreMoves)
 
 	if len(moves) >= 2 {
@@ -2400,6 +2564,13 @@ func (uci *UCI) setoption(line string) error {
 	///////////////////////////////////////////////////
 
 	switch option[1] {
+	case "MultiPV":
+	if multipv, err := strconv.ParseInt(option[3], 10, 64); err != nil {
+		return err
+	} else {
+		MultiPV = int(multipv)
+	}
+	return nil
 	case "UCI_AnalyseMode":
 		if mode, err := strconv.ParseBool(option[3]); err != nil {
 			return err
