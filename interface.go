@@ -206,7 +206,7 @@ var Protocol int
 var TEST bool = true
 
 // use unicode symbols in test print of board
-var USE_UNICODE_SYMBOLS = true
+var USE_UNICODE_SYMBOLS = false
 
 // enumeration of protocols
 const(
@@ -357,7 +357,7 @@ var Rand=rand.New(rand.NewSource(time.Now().UnixNano()))
 var DontPrintPV = false
 
 // max book depth
-const MAX_BOOK_DEPTH = 28
+const MAX_BOOK_DEPTH = 48
 
 // use book instead of search where available
 var UseBook = false
@@ -406,14 +406,14 @@ var BookCutOff int32 = 3000
 
 // probability limits for selecting nodes in book building in the function of depth
 var SelectLimits = [MAX_BOOK_DEPTH]int{
-	90, // 1
-	80, // 2
-	70, // 3
-	60, // 4
-	50, // 5
-	40, // 6
-	30, // 7
-	20, // 8
+	70, // 1
+	50, // 2
+	30, // 3
+	10, // 4
+	10, // 5
+	10, // 6
+	10, // 7
+	10, // 8
 	10, // 9
 	10, // 10
 	10, // 11
@@ -434,10 +434,33 @@ var SelectLimits = [MAX_BOOK_DEPTH]int{
 	10, // 26
 	10, // 27
 	10, // 28
+	10, // 29
+	10, // 30
+	10, // 31
+	10, // 32
+	10, // 33
+	10, // 34
+	10, // 35
+	10, // 36
+	10, // 37
+	10, // 38
+	10, // 39
+	10, // 40
+	10, // 41
+	10, // 42
+	10, // 43
+	10, // 44
+	10, // 45
+	10, // 46
+	10, // 47
+	10, // 48
 }
 
 // add move chan
 var AddMoveChan chan int
+
+// minimax max depth
+var MinimaxMaxDepth = 0
 
 // end definitions
 ///////////////////////////////////////////////
@@ -738,10 +761,10 @@ func (pos *Position) BookMovesToPrintable() string {
 		algeb := mentry.Algeb
 		move , err := pos.UCIToMove(algeb)
 		if err == nil {
-			if cnt < 10 {
+			if cnt < 20 {
 				mep := mentry.ToPrintable(pos)
 				pos.DoMove(move)
-				buff += fmt.Sprintf("%s %s\n", mep, pos.CalcLine(pos.BookLineMoves()))
+				buff += fmt.Sprintf("%2d.%s %s\n", cnt+1, mep, pos.CalcLine(pos.BookLineMoves()))
 				pos.UndoMove()
 				cnt ++
 			}
@@ -977,6 +1000,9 @@ var MinimaxNodes = 0
 
 func MinimaxOutRecursive(depth int) int {
 	MinimaxNodes++
+	if depth > MinimaxMaxDepth {
+		MinimaxMaxDepth = depth
+	}
 	alpha := int(-InfinityScore)
 	if depth >= MAX_BOOK_DEPTH {
 		return alpha
@@ -1015,6 +1041,7 @@ func MinimaxOutRecursive(depth int) int {
 
 func MinimaxOut() int {
 	MinimaxNodes = 0
+	MinimaxMaxDepth = 0
 	return MinimaxOutRecursive(0)
 }
 
@@ -1028,7 +1055,7 @@ func MinimaxOutVerbose() int {
 	MinimaxNodes = 0	
 	fmt.Printf("minimaxing out ( no %d ) ... ", MinimaxCnt)
 	eval := MinimaxOutRecursive(0)
-	fmt.Printf("done ( nodes %d )\n", MinimaxNodes)
+	fmt.Printf("done ( nodes %d maxdepth %d )\n", MinimaxNodes, MinimaxMaxDepth)
 	return eval
 }
 
@@ -1153,7 +1180,7 @@ func AddMove(line string) bool {
 		if len(line) > 50 {
 			line = line[0:49] + " ..."
 		}
-		fmt.Printf("\r   %s %-60s\r", SignedScore(int(score)), line + " " + MultiPVList[0].AlgebLine[0])
+		fmt.Printf("\r   %-60s %s          \r", line + " " + MultiPVList[0].AlgebLine[0], SignedScore(int(score)))
 		return true
 	}
 
