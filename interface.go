@@ -406,8 +406,8 @@ var BookCutOff int32 = 3000
 
 // probability limits for selecting nodes in book building in the function of depth
 var SelectLimits = [MAX_BOOK_DEPTH]int{
-	70, // 1
-	50, // 2
+	90, // 1
+	60, // 2
 	30, // 3
 	10, // 4
 	10, // 5
@@ -961,6 +961,21 @@ func AddNodeRecursive(depth int, line string) bool {
 
 			r := Rand.Intn(100)
 			limit := SelectLimits[depth]
+
+			numlegals := len(pos.GetLegalMoves(GET_ALL))
+
+			if numlegals > 0 {
+
+				fairshare := 100 / numlegals
+
+				share := 100 - limit
+
+				if share < fairshare {
+					limit = 100 - fairshare
+				}
+
+			}
+
 			randok := ( r > limit )
 
 			version := mentry.BookVersion
@@ -994,11 +1009,12 @@ func AddNodeRecursive(depth int, line string) bool {
 ///////////////////////////////////////////////
 // MinimaxOut : minimax out book wrt current position recursively
 // -> depth int : depth
+// -> line []uint64 : line in Zobrist keys
 // <- int : eval
 
 var MinimaxNodes = 0
 
-func MinimaxOutRecursive(depth int) int {
+func MinimaxOutRecursive(depth int, line []uint64) int {
 	MinimaxNodes++
 	if depth > MinimaxMaxDepth {
 		MinimaxMaxDepth = depth
@@ -1008,6 +1024,12 @@ func MinimaxOutRecursive(depth int) int {
 		return alpha
 	}
 	pos := uci.Engine.Position
+	zobrist := pos.Zobrist()
+	for _, z := range line {
+		if zobrist == z {
+			return 0
+		}
+	}
 	pentry , found := pos.GetBookEntry()
 	if found {
 		for algeb , mentry := range pentry.MoveEntries {
@@ -1015,7 +1037,7 @@ func MinimaxOutRecursive(depth int) int {
 			move , err := pos.UCIToMove(algeb)
 			if err == nil {
 				uci.Engine.DoMove(move)
-				eval := -MinimaxOutRecursive(depth+1)
+				eval := -MinimaxOutRecursive(depth+1, append(line, zobrist))
 				if eval == int(InfinityScore) {
 					eval = score
 				}
@@ -1042,7 +1064,7 @@ func MinimaxOutRecursive(depth int) int {
 func MinimaxOut() int {
 	MinimaxNodes = 0
 	MinimaxMaxDepth = 0
-	return MinimaxOutRecursive(0)
+	return MinimaxOutRecursive(0,[]uint64{})
 }
 
 ///////////////////////////////////////////////
@@ -1052,9 +1074,8 @@ func MinimaxOut() int {
 // <- int : eval
 
 func MinimaxOutVerbose() int {
-	MinimaxNodes = 0	
 	fmt.Printf("minimaxing out ( no %d ) ... ", MinimaxCnt)
-	eval := MinimaxOutRecursive(0)
+	eval := MinimaxOut()
 	fmt.Printf("done ( nodes %d maxdepth %d )\n", MinimaxNodes, MinimaxMaxDepth)
 	return eval
 }
