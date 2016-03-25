@@ -2810,7 +2810,7 @@ func (eng *Engine) Play(tc *TimeControl, ignoremoves []Move) (moves []Move) {
 		numlegalmoves := len(legalmoves)
 		ignoremovescurrent := ignoremoves
 
-		MultiPVList = []MultiPVItem{}
+		MultiPVList = MultiPVItemList{}
 
 		for MultiPVIndex = 1 ; MultiPVIndex <= MultiPV ; MultiPVIndex++ {
 
@@ -2847,14 +2847,8 @@ func (eng *Engine) Play(tc *TimeControl, ignoremoves []Move) (moves []Move) {
 
 		MultiPVIndex = 1
 
-		MultiPVList.Sort()
-
-		for index := 0 ; index < len(MultiPVList) ; index ++ {
-			if Protocol == PROTOCOL_UCI {
-				Printu(fmt.Sprintf("info multipv %d %s", index+1, MultiPVList[index].InfoString))
-			}
-		}
-
+		ReportPV()
+		
 	}
 
 	eng.Log.EndSearch()

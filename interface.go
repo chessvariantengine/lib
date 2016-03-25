@@ -375,7 +375,7 @@ var SaveBookAfterMinimaxCnt = 5
 var BookBuildingUnderWay = false
 
 // multipv mode
-var MultiPV = 5
+var MultiPV = 1
 
 // current multipv index
 var MultiPVIndex = 1
@@ -385,6 +385,7 @@ type MultiPVItem struct {
 	Stats Stats
 	Score int32
 	Line []Move
+	AlgebLine []string
 	InfoString string
 }
 
@@ -392,12 +393,83 @@ type MultiPVItem struct {
 type MultiPVItemList []MultiPVItem
 
 // list of all multipv items
-var MultiPVList MultiPVItemList
+var MultiPVList = MultiPVItemList{}
 
 // current search depth
 var CurrentSearchDepth int32
 
+// latest available score
+var LastScore int32
+
+// cutoff limit for book building in centipawns
+var BookCutOff int32 = 3000
+
+// probability limits for selecting nodes in book building in the function of depth
+var SelectLimits = [MAX_BOOK_DEPTH]int{
+	90, // 1
+	80, // 2
+	70, // 3
+	60, // 4
+	50, // 5
+	40, // 6
+	30, // 7
+	20, // 8
+	10, // 9
+	10, // 10
+	10, // 11
+	10, // 12
+	10, // 13
+	10, // 14
+	10, // 15
+	10, // 16
+	10, // 17
+	10, // 18
+	10, // 19
+	10, // 20
+	10, // 21
+	10, // 22
+	10, // 23
+	10, // 24
+	10, // 25
+	10, // 26
+	10, // 27
+	10, // 28
+}
+
+// add move chan
+var AddMoveChan chan int
+
 // end definitions
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// HasScore : multipv item list has at least one item that can provide a score
+// -> mpvl *MultiPVItemList : multipv item list
+// <- book : true if has score
+
+func (mpvl *MultiPVItemList) HasScore() bool {
+	if len(*mpvl) <= 0 {
+		return false
+	}
+	return true
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetScore : get the score from multipv item list
+// -> mpvl *MultiPVItemList : multipv item list
+// <- int32 : best score in the list
+
+func (mpvl *MultiPVItemList) GetScore() int32 {
+	if !mpvl.HasScore() {
+		// we should not get here
+		return 0
+	}
+	mpvl.Sort()
+	return (*mpvl)[0].Score
+}
+
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
@@ -434,6 +506,10 @@ func (ul *uciLogger) CreateMultiPVItem(stats Stats, score int32, line []Move) Mu
 		Score : score,
 		Line : line,
 	}
+	item.AlgebLine=[]string{}
+	for _, m := range item.Line {
+			item.AlgebLine=append(item.AlgebLine,m.UCI())
+		}
 	item.InfoString=ul.ReportInfoString(item)
 	return item
 }
@@ -571,10 +647,7 @@ func SignedScore(score int) string {
 // <- string : move entry printable
 
 func (mentry *BookMoveEntry) ToPrintable(pos *Position) string {
-	evalstr := "?"
-	if mentry.HasEval {
-		evalstr = SignedScore(mentry.Eval)
-	}
+	evalstr := SignedScore(mentry.GetEval())
 	mstr := mentry.Algeb
 	if pos != nil {
 		move , err := pos.UCIToMove(mstr)
@@ -582,10 +655,7 @@ func (mentry *BookMoveEntry) ToPrintable(pos *Position) string {
 			mstr = move.LAN()
 		}
 	}
-	//return fmt.Sprintf("%6s d%3d v%3d S%5d E%5s",
-	return fmt.Sprintf("%8s %5s",
-		//mentry.Algeb, mentry.Depth, mentry.BookVersion, mentry.Score, evalstr)
-		mstr, evalstr)
+	return fmt.Sprintf("%8s %5s", mstr, evalstr)
 }
 
 ///////////////////////////////////////////////
@@ -837,81 +907,62 @@ func LoadBook() {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// IsBookCutOff : check is score is a book cutoff
+// -> score int32 : score
+// <- bool : true if cutoff
+
+func IsBookCutOff(score int32) bool {
+	return ( ( score < -BookCutOff ) || ( score > BookCutOff ) )
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // AddNodeRecursive : add node recursive
 // -> depth int : depth
+// <- bool : true if node was added
 
-var SelectLimits = [MAX_BOOK_DEPTH]int{
-	90, // 1
-	80, // 2
-	70, // 3
-	60, // 4
-	50, // 5
-	40, // 6
-	30, // 7
-	20, // 8
-	10, // 9
-	10, // 10
-	10, // 11
-	10, // 12
-	10, // 13
-	10, // 14
-	10, // 15
-	10, // 16
-	10, // 17
-	10, // 18
-	10, // 19
-	10, // 20
-	10, // 21
-	10, // 22
-	10, // 23
-	10, // 24
-	10, // 25
-	10, // 26
-	10, // 27
-	10, // 28
-}
-
-func TruncLine(line string) string {
-	if len(line) < 60 {
-		return line
-	}
-	return "..."+line[len(line)-60:]
-}
-
-func AddNodeRecursive(depth int, line string) {
+func AddNodeRecursive(depth int, line string) bool {
 	if depth >= MAX_BOOK_DEPTH {
-		return
+		return false
 	}
 	pos := uci.Engine.Position
 	mentrylist := pos.GetSortedMoveEntryList()
 	if len(mentrylist) <= 0 {
-		fmt.Printf("\r- %-65s\r", TruncLine(line))
-		AddMove()
+		return AddMove(line)
+	} else if IsBookCutOff(int32(mentrylist[0].Score)) {
+		return false
 	} else {
-		selected := false
 		for _ , mentry := range mentrylist {
 			algeb := mentry.Algeb
+
 			r := Rand.Intn(100)
 			limit := SelectLimits[depth]
+			randok := ( r > limit )
+
 			version := mentry.BookVersion
-			if BookVersion > version {
+			versionok := ( version <= BookVersion )
+
+			score := int32(mentry.Score)
+			scoreok := ( !IsBookCutOff(score) )
+
+			selectok := ( randok && scoreok )
+
+			if !versionok {
 				pos.DeletePositionEntryMoves()
 				break
-			} else if r > limit {
+			} else if selectok {
 				move , err := uci.Engine.Position.UCIToMove(algeb)
 				if err == nil {
 					uci.Engine.DoMove(move)
-					AddNodeRecursive(depth+1, line+" "+algeb)
+					res := AddNodeRecursive(depth+1, line+" "+algeb)
 					uci.Engine.UndoMove()
-					selected = true
-					break
+					return res
 				}
 			}
 		}
-		if !selected {
-			fmt.Printf("\r+ %-65s\r", TruncLine(line))
-			AddMove()
-		}
+
+		return AddMove(line)
 	}
 }
 
@@ -1001,19 +1052,29 @@ var BuildBookReady chan int
 
 func BuildBook() {
 	DontPrintPV = true
-	cnt := 0
+	trycnt := 0
+	okcnt := 0
+	totalokcnt := 0
 	for !BuildBookStopped {
-		AddNodeRecursive(0,"*")
-		cnt++
-		if cnt >= 10 {
-			MinimaxCnt++
-			fmt.Println()
-			MinimaxOutVerbose()
-			PrintBookPage()
-			if ( MinimaxCnt % SaveBookAfterMinimaxCnt ) == 0 {				
-				SaveBookAutoVerbose()
+		trycnt++
+		if AddNodeRecursive(0,"*") {
+			okcnt++
+			totalokcnt++
+			if okcnt >= 10 {
+				MinimaxCnt++
+				fmt.Println()
+				MinimaxOutVerbose()
+				PrintBookPage()
+				if ( MinimaxCnt % SaveBookAfterMinimaxCnt ) == 0 {				
+					SaveBookAutoVerbose()
+				}
+				okcnt = 0
 			}
-			cnt = 0
+		}
+		// if at least one node cannot be added per 1000 tries something is wrong, better to finish
+		if ( trycnt >= 1000 ) && ( ( totalokcnt*1000 ) < trycnt ) {
+			fmt.Printf("\n\nwarning: add move fails too much, book building auto stopped\n\n")
+			break	
 		}
 	}
 	BuildBookReady <- 0
@@ -1051,16 +1112,16 @@ func StopBuildBook() {
 
 ///////////////////////////////////////////////
 // AddMove : add move to current position's book moves
+// -> line string : line to which move is added
+// <- bool : true if move was added
 
-var AddMoveChan chan int
-
-func AddMove() {
+func AddMove(line string) bool {
 	pos := uci.Engine.Position
 
 	_ , final := uci.Engine.EndPosition()
 
 	if final {
-		return
+		return false
 	}
 
 	IgnoreMoves = pos.GetBookMoveList()
@@ -1068,12 +1129,12 @@ func AddMove() {
 	LegalMoves := pos.GetLegalMoves(GET_ALL)
 
 	if len(LegalMoves) <= 0 {
-		return
+		return false
 	}
 
 	if len(IgnoreMoves) >= len(LegalMoves) {
 		// if all moves were already searched, nothing to do
-		return
+		return false
 	}
 
 	command := fmt.Sprintf("go depth %d", StoreMinDepth)
@@ -1086,6 +1147,17 @@ func AddMove() {
 
 	// wait for analysis to finish
 	<- AddMoveChan
+
+	if MultiPVList.HasScore() {
+		score := MultiPVList.GetScore()
+		if len(line) > 50 {
+			line = line[0:49] + " ..."
+		}
+		fmt.Printf("\r   %s %-60s\r", SignedScore(int(score)), line + " " + MultiPVList[0].AlgebLine[0])
+		return true
+	}
+
+	return false
 }
 
 ///////////////////////////////////////////////
@@ -1230,9 +1302,6 @@ func ExecuteTest() error {
 			return errTestOk
 		case "lb":
 			LoadBook()
-			return errTestOk
-		case "am":
-			AddMove()
 			return errTestOk
 		case "an":
 			AddNodeRecursive(0,"*")
@@ -1867,13 +1936,43 @@ func (ul *uciLogger) EndSearch() {
 }
 
 ///////////////////////////////////////////////
+// ReportPV : this function is called when the search finished a depth
+
+func ReportPV() {
+	// store latest available score
+	if MultiPVList.HasScore() {
+		// GetScore also does the sorting
+		LastScore = MultiPVList.GetScore()
+	} else {
+		return
+	}
+
+	if DontPrintPV {
+		// if pv should not be printed we are done
+		return
+	}
+
+	if Protocol == PROTOCOL_UCI {
+		for index := 0 ; index < len(MultiPVList) ; index ++ {
+			Printu(fmt.Sprintf("info multipv %d %s", index+1, MultiPVList[index].InfoString))
+		}
+	}
+
+	if Protocol == PROTOCOL_XBOARD {
+		// XBOARD does not support multipv mode, so we print the first pv
+		Printu(MultiPVList[0].InfoString)
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // PrintPV : prints pv
+// obsolete, ReportPV is used instead
 // -> ul *uciLogger : uci logger
 // -> stats Stats : stats
 // -> score int32 : score
 // -> pv []Move : pv
-
-var LastScore int32
 
 func (ul *uciLogger) PrintPV(stats Stats, score int32, pv []Move) {
 	// store latest score
