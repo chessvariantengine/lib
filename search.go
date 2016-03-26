@@ -186,9 +186,6 @@ type Logger interface {
 	BeginSearch()
 	// EndSearch signals end of search
 	EndSearch()
-	// PrintPV logs the principal variation after
-	// iterative deepening completed one depth
-	PrintPV(stats Stats, score int32, pv []Move)
 	// report info string
 	ReportInfoString(item MultiPVItem) string
 	// create multi pv item
@@ -203,9 +200,6 @@ func (nl *NulLogger) BeginSearch() {
 }
 
 func (nl *NulLogger) EndSearch() {
-}
-
-func (nl *NulLogger) PrintPV(stats Stats, score int32, pv []Move) {
 }
 
 func (ul *NulLogger) ReportInfoString(item MultiPVItem) string {
