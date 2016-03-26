@@ -1416,7 +1416,7 @@ func ExecuteUci() error {
 // <- error : error
 
 func ExecuteXboard() error {
-	Log(fmt.Sprintf("received command %s in state %s\n",line,XBOARD_State_Names[XBOARD_State]))
+	//Log(fmt.Sprintf("received command %s in state %s\n",line,XBOARD_State_Names[XBOARD_State]))
 	// state independent commands
 	switch command {
 	case "quit":
@@ -1469,6 +1469,7 @@ func ExecuteXboard() error {
 		switch command {
 		case "xboard":
 			Printu(fmt.Sprintf("feature myname=\"%s by Alexandru Mosoi\""+
+			" analyze=1 variants=\"atomic\""+
 			" setboard=1 usermove=1 playother=1 done=1\n",GetEngineName()))
 			XBOARD_State = XBOARD_Observing
 			return nil
@@ -1582,7 +1583,7 @@ func XBOARD_Error(etype, evalue string) error {
 func XBOARD_Check_Analyze() {
 	// start analyzing move
 	if XBOARD_State == XBOARD_Analyzing {
-		Log("check analyze success\n")
+		//Log("check analyze success\n")
 		predicted := uci.predicted == uci.Engine.Position.Zobrist()
 		uci.timeControl = NewTimeControl(uci.Engine.Position, predicted)
 		uci.timeControl.MovesToGo = 30 // in case there is not time refresh
@@ -1597,7 +1598,7 @@ func XBOARD_Check_Analyze() {
 		uci.timeControl.Start(ponder)
 		uci.ready <- struct{}{}
 
-		Log("starting analysis\n")
+		//Log("starting analysis\n")
 		IgnoreMoves = []Move{}
 		go uci.play()
 	}
@@ -1611,22 +1612,22 @@ func XBOARD_Check_Analyze() {
 // <- error : error
 
 func (uci *UCI) XBOARD_usermove() error {
-	Log(fmt.Sprintf("received usermove command with %d args\n",numargs))
+	//Log(fmt.Sprintf("received usermove command with %d args\n",numargs))
 	if numargs != 1 {
 		return XBOARD_Error("wrong number of arguments for usermove",fmt.Sprintf("%d",numargs))
 	}
 	// stop any ongoing analysis
-	Log("stopping engine\n")
+	//Log("stopping engine\n")
 	uci.stop("")
-	Log("engine stopped, checking move\n")
+	//Log("engine stopped, checking move\n")
 	// make move if legal
 	if move, err := uci.Engine.Position.UCIToMove(args[0]); err != nil {
 		return err
 	} else {
-		Log("making move\n")
+		//Log("making move\n")
 		uci.Engine.DoMove(move)
 	}
-	Log("move made, check analyze\n")
+	//Log("move made, check analyze\n")
 	XBOARD_Check_Analyze()
 	return nil
 }
@@ -2110,7 +2111,7 @@ func (ul *uciLogger) ReportInfoString(item MultiPVItem) string {
 		XBOARD_now := time.Now()
 		XBOARD_elapsed := uint64(maxDuration(XBOARD_now.Sub(ul.start), time.Microsecond))
 		XBOARD_millis := XBOARD_elapsed / uint64(time.Millisecond)
-		XBOARD_centis := XBOARD_millis * 10
+		XBOARD_centis := XBOARD_millis / 10
 		XBOARD_score := item.Score
 		if XBOARD_score > KnownWinScore {
 			XBOARD_score = 100000 + (MateScore-XBOARD_score+1)/2
