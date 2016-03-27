@@ -595,7 +595,10 @@ func (posentry *BookPositionEntry) GetSortedMoveEntryList() []BookMoveEntry {
 			greater := ( mentry.GetEval() > mentrylist[i].GetEval() )
 			if ( mentry.Int1 != 0 ) && ( mentrylist[i].Int1 != 0 )	{
 				// both moves annotated
-				greater = mentry.Int1 > mentrylist[i].Int1
+				if mentry.Int1 != mentrylist[i].Int1 {
+					// overrule only if annotations differ
+					greater = mentry.Int1 > mentrylist[i].Int1
+				}
 			} else if ( mentry.Int1 != 0 ) {
 				// first move is annotated
 				greater = mentry.Int1 > 0
@@ -2282,6 +2285,7 @@ func (uci *UCI) MakeSanMove(line string) error {
 	}
 	uci.Engine.DoMove(move)
 	uci.PrintBoard()
+	PrintBookPage()
 	return nil
 }
 
