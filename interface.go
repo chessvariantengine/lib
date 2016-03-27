@@ -1275,7 +1275,7 @@ func Log(what string) {
 func ExecuteLine(setline string) error {
 	line = strings.TrimSpace(setline)
 	// print command line to log
-	Log(fmt.Sprintf("%s\n",line))
+	Log(fmt.Sprintf("-> %s\n",line))
 	args = strings.Fields(line)
 	var err error = nil
 	if len(args)>0 {
@@ -1494,6 +1494,7 @@ func ExecuteXboard() error {
 			return err
 		}
 		XBOARD_State = XBOARD_Analyzing
+		XBOARD_Check_Analyze()
 		return nil
 	}
 	switch XBOARD_State {
@@ -1825,12 +1826,16 @@ func (uci *UCI) XBOARD_nopost() error {
 // <- error : error
 
 func (uci *UCI) XBOARD_setboard() error {
+	uci.stop("")
 	fen := GetRest()
+	//Log(fmt.Sprintf("setboard received fen %s\n",fen))
 	pos, err := PositionFromFEN(fen)
 	if err != nil {
+		//Log("set from fen failed\n")
 		return err
 	}
 	uci.Engine.SetPosition(pos)
+	//Log(fmt.Sprintf("engine position set to %s\n",uci.Engine.Position.String()))
 	return nil
 }
 
