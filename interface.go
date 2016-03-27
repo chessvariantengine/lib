@@ -2093,7 +2093,9 @@ func ReportPV() {
 
 	if Protocol == PROTOCOL_UCI {
 		for index := 0 ; index < len(MultiPVList) ; index ++ {
-			Printu(fmt.Sprintf("info multipv %d %s", index+1, MultiPVList[index].InfoString))
+			info := fmt.Sprintf("info multipv %d %s", index+1, MultiPVList[index].InfoString)
+			Printu(info)
+			Log(info)
 		}
 	}
 
@@ -2568,6 +2570,12 @@ func (uci *UCI) play() {
 	}
 
 	moves := uci.Engine.Play(uci.timeControl, IgnoreMoves)
+
+	if MultiPV > 1 {
+		if MultiPVList.HasScore() {
+			moves = MultiPVList[0].Line
+		}
+	}
 
 	if len(moves) >= 2 {
 		uci.Engine.Position.DoMove(moves[0])
