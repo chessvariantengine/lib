@@ -320,7 +320,7 @@ type BookMoveEntry struct {
 	// nodes used to calculate this eval ( this is book nodes )
 	Nodes int
 	// reserved for future use
-	Int1 int
+	Int1 int // annotation
 	Int2 int
 	Int3 int
 	Str1 string
@@ -328,13 +328,16 @@ type BookMoveEntry struct {
 	Str3 string
 }
 
+// moventries type
+type BookMoveEntries map[string]BookMoveEntry
+
 // book entry holds all evaluated moves for a given position
 type BookPositionEntry struct {
 	// fen
 	Fen string
 	// move entries
 	// key for move entries is move in algebraic notation
-	MoveEntries map[string]BookMoveEntry
+	MoveEntries BookMoveEntries
 }
 
 // book main entry holds the entire book
@@ -589,7 +592,18 @@ func (posentry *BookPositionEntry) GetSortedMoveEntryList() []BookMoveEntry {
 		// sort
 		inserted := false
 		for i := 0 ; i < len(mentrylist) ; i++ {
-			if mentry.GetEval() > mentrylist[i].GetEval() {
+			greater := ( mentry.GetEval() > mentrylist[i].GetEval() )
+			if ( mentry.Int1 != 0 ) && ( mentrylist[i].Int1 != 0 )	{
+				// both moves annotated
+				greater = mentry.Int1 > mentrylist[i].Int1
+			} else if ( mentry.Int1 != 0 ) {
+				// first move is annotated
+				greater = mentry.Int1 > 0
+			} else if ( mentrylist[i].Int1 != 0 ) {
+				// second move is annotated
+				greater = mentrylist[i].Int1 < 0
+			}
+			if greater {
 				sorted := []BookMoveEntry{}
 				for j := 0 ; j < i ; j++ {
 					sorted = append(sorted, mentrylist[j])
@@ -678,7 +692,7 @@ func (mentry *BookMoveEntry) ToPrintable(pos *Position) string {
 			mstr = move.LAN()
 		}
 	}
-	return fmt.Sprintf("%8s %5s", mstr, evalstr)
+	return fmt.Sprintf(" ( %3s ) %8s %5s", SignedScore(mentry.Int1), mstr, evalstr)
 }
 
 ///////////////////////////////////////////////
@@ -812,7 +826,7 @@ func (pos *Position) GetMoveEntry(algeb string) ( BookMoveEntry , bool ) {
 
 func (pos *Position) DeletePositionEntryMoves() {
 	Book.PositionEntries[pos.ZobristStr()] = BookPositionEntry{
-		MoveEntries : make(map[string]BookMoveEntry),
+		MoveEntries : make(BookMoveEntries),
 	}
 }
 
@@ -828,7 +842,7 @@ func (pos *Position) StoreMoveEntry(algeb string, mentry BookMoveEntry) {
 	pentry , pfound := pos.GetBookEntry()
 	if !pfound {
 		pentry = BookPositionEntry{
-			MoveEntries : make(map[string]BookMoveEntry),
+			MoveEntries : make(BookMoveEntries),
 		}
 	}
 	pentry.MoveEntries[algeb] = mentry
@@ -1314,8 +1328,14 @@ func ExecuteTest() error {
 			uci.PrintBoard()
 			return errTestOk
 		case "a":
-			uci.SetVariant(VARIANT_Atomic)
-			uci.PrintBoard()
+			if numargs == 2 {
+				if AnnotateMove() == nil {
+					PrintBookPage()
+				}
+			} else {
+				uci.SetVariant(VARIANT_Atomic)
+				uci.PrintBoard()
+			}
 			return errTestOk
 		case "h":
 			uci.SetVariant(VARIANT_Horde)
@@ -1350,6 +1370,7 @@ func ExecuteTest() error {
 			return errTestOk
 		case "lb":
 			LoadBook()
+			PrintBookPage()
 			return errTestOk
 		case "an":
 			AddNodeRecursive(0,"*")
@@ -2730,6 +2751,44 @@ func (uci *UCI) SetVariant(setVariant int) error {
 		case PROTOCOL_XBOARD: log.SetPrefix("Error ")
 	}
 	uci.Engine.SetVariant(setVariant)
+	return nil
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// AnnotateMove : annotate move
+// <- error : error
+
+func AnnotateMove() error {
+	san := args[0]
+	annot, _ := strconv.Atoi(args[1])
+
+	pos := uci.Engine.Position
+
+	move, err := pos.SANToMove(san)
+
+	if err == nil {
+		algeb := move.UCI()
+		mentry, found := pos.GetMoveEntry(algeb)
+		if found {
+			mentry.Int1 = annot
+		} else {
+			mentry = BookMoveEntry{
+				Algeb : algeb,
+				Score : 0,
+				Depth : 0,
+				BookVersion : BookVersion,
+				HasEval : false,
+				Eval : 0,
+				Nodes : 0,
+				Int1 : annot,
+			}
+		}
+		pos.StoreMoveEntry(algeb, mentry)
+	} else {
+		return XBOARD_Error("illegal annotation move",san)
+	}
 	return nil
 }
 
