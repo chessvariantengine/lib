@@ -40,15 +40,19 @@ import(
 
 var uci *UCI
 
-func Run(variant int, protocol int) {
+func Run(variant int, protocol int, bookblob *[]byte) {
 	// set current variant
 	Variant = variant
 	// set current protocol
 	Protocol = protocol
+	// set book json blob
+	BookJsonBlob = bookblob
 
 	ClearLog()
 
 	ClearBook()
+
+	LoadSimpleBook(bookblob)
 
 	/*if protocol == PROTOCOL_XBOARD {
 		UseBook = true
@@ -350,6 +354,9 @@ type BookMainEntry struct {
 // book
 var Book BookMainEntry
 
+// simple book
+var SimpleBook map[string]string
+
 // ignore moves
 var IgnoreMoves = []Move{}
 
@@ -464,6 +471,9 @@ var AddMoveChan chan int
 
 // minimax max depth
 var MinimaxMaxDepth = 0
+
+// book json blob
+var BookJsonBlob *[]byte = nil
 
 // end definitions
 ///////////////////////////////////////////////
@@ -885,6 +895,32 @@ func SaveBook() {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// SaveSimpleBook : saves simple book to disk
+
+func SaveSimpleBook() {
+	f,err:=os.Create("simplebook.txt")
+	if err!=nil {
+		panic(err)
+	} else {
+		simplebook := make(map[string]string)
+		for zobriststr, posentry := range Book.PositionEntries {
+			mentrylist := posentry.GetSortedMoveEntryList()
+			if len(mentrylist) > 0 {
+				simplebook[zobriststr] = mentrylist[0].Algeb
+			}
+		}
+		b , err := json.Marshal(simplebook)
+		if err != nil {
+			panic(err)
+		}
+		f.Write(b)
+		f.Close()
+	}
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // SaveBookVerbose : saves Book to disk and reports it
 
 func SaveBookVerbose() {
@@ -945,6 +981,24 @@ func LoadBook() {
 }
 
 ///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// LoadSimpleBook : loads simple book
+
+func LoadSimpleBook(bookblob *[]byte) {
+	if bookblob == nil {
+		SimpleBook = make(map[string]string)
+		return
+	}
+	err := json.Unmarshal(*bookblob, &SimpleBook)
+	if err != nil {
+		panic(err)
+	}
+	//fmt.Printf("simple book size %d positions\n", len(SimpleBook))
+}
+
+///////////////////////////////////////////////
+
 
 ///////////////////////////////////////////////
 // IsBookCutOff : check is score is a book cutoff
@@ -1371,6 +1425,9 @@ func ExecuteTest() error {
 		case "sb":
 			SaveBook()
 			return errTestOk
+		case "ssb":
+			SaveSimpleBook()
+			return errTestOk
 		case "lb":
 			LoadBook()
 			PrintBookPage()
@@ -1620,7 +1677,6 @@ func (uci *UCI) XBOARD_option() error {
 	option := args[0]
 	switch option {
 	case "UseBook":
-		LoadBook()
 		UseBook = true
 		//Log("use book accepted\n")
 	}
@@ -2421,6 +2477,21 @@ func (uci *UCI) position(line string) error {
 }
 
 ///////////////////////////////////////////////
+
+///////////////////////////////////////////////
+// GetSimpleBookMove : gets the best move for position from simple book
+// -> pos *Position : position
+// <- string : algeb
+// <- bool : true if found
+
+func (pos *Position) GetSimpleBookMove() (string, bool) {
+	algeb, found := SimpleBook[pos.ZobristStr()]
+	return algeb, found
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // go_ : go command
 // -> uci *UCI : UCI
 // -> line string : command line
@@ -2429,13 +2500,11 @@ func (uci *UCI) position(line string) error {
 func (uci *UCI) go_(line string) error {
 	if UseBook {
 		pos := uci.Engine.Position
-		mentrylist := pos.GetSortedMoveEntryList()
-		if ( len(mentrylist) > 0 ) && UseBook {
-			mentry := mentrylist[0]
-			algeb := mentry.Algeb
+		algeb, found := pos.GetSimpleBookMove()
+		if found && UseBook {
 			_ , err := pos.UCIToMove(algeb)
 			if err == nil {
-				Printu(fmt.Sprintf("info depth 0 time 0 score cp %d pv %s\nbestmove %s\n", mentry.GetEval(), algeb, algeb))
+				Printu(fmt.Sprintf("info depth 0 time 0 score cp 0 pv %s\nbestmove %s\n", algeb, algeb))
 				return nil
 			}
 		}
@@ -2549,10 +2618,8 @@ func (uci *UCI) play() {
 
 	if UseBook && ( Protocol == PROTOCOL_XBOARD ) && ( XBOARD_State != XBOARD_Analyzing ) {
 		pos := uci.Engine.Position
-		mentrylist := pos.GetSortedMoveEntryList()
-		if ( len(mentrylist) > 0 ) {
-			mentry := mentrylist[0]
-			algeb := mentry.Algeb
+		algeb, found := pos.GetSimpleBookMove()
+		if found {
 			move , err := pos.UCIToMove(algeb)
 			if err == nil {
 				uci.ponder <- struct{}{}
@@ -2693,7 +2760,6 @@ func (uci *UCI) setoption(line string) error {
 		GlobalHashTable.Clear()
 		return nil
 	case "UseBook":
-		LoadBook()
 		UseBook = true
 		return nil
 	}
