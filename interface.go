@@ -300,7 +300,7 @@ var MakeAnalyzedMove bool = false
 var StoreScores bool = true
 
 // minimal depth required for storing a score
-var StoreMinDepth = 12
+var StoreMinDepth = 11
 
 // book version : should be stored together with engine score in the book
 // if the engine is modified a higher book version can signal
@@ -474,6 +474,12 @@ var MinimaxMaxDepth = 0
 
 // book json blob
 var BookJsonBlob *[]byte = nil
+
+// minimum nodes required for move in simple book
+var MinSimpleBookNodes = 3
+
+// max number of legal moves per position
+var MAX_LEGAL_MOVES = 500
 
 // end definitions
 ///////////////////////////////////////////////
@@ -705,7 +711,7 @@ func (mentry *BookMoveEntry) ToPrintable(pos *Position) string {
 			mstr = move.LAN()
 		}
 	}
-	return fmt.Sprintf(" ( %3s ) %8s %5s", SignedScore(mentry.Int1), mstr, evalstr)
+	return fmt.Sprintf(" ( %3s , %5d ) %8s %5s", SignedScore(mentry.Int1), mentry.Nodes, mstr, evalstr)
 }
 
 ///////////////////////////////////////////////
@@ -898,17 +904,26 @@ func SaveBook() {
 // SaveSimpleBook : saves simple book to disk
 
 func SaveSimpleBook() {
+	uci.SetVariant(VARIANT_CURRENT)
+	PrintBookPage()
+	MinimaxOutVerbose()
 	f,err:=os.Create("simplebook.txt")
 	if err!=nil {
 		panic(err)
 	} else {
 		simplebook := make(map[string]string)
+		poscnt := 0
 		for zobriststr, posentry := range Book.PositionEntries {
 			mentrylist := posentry.GetSortedMoveEntryList()
 			if len(mentrylist) > 0 {
-				simplebook[zobriststr] = mentrylist[0].Algeb
+				bestentry := mentrylist[0]
+				if bestentry.Nodes >= MinSimpleBookNodes {
+					simplebook[zobriststr] = bestentry.Algeb
+					poscnt++
+				}
 			}
 		}
+		fmt.Printf("number of positions %d\n", poscnt)
 		b , err := json.Marshal(simplebook)
 		if err != nil {
 			panic(err)
@@ -1107,6 +1122,7 @@ func MinimaxOutRecursive(depth int, line []uint64) int {
 			score := mentry.Score
 			move , err := pos.UCIToMove(algeb)
 			if err == nil {
+				startnodes := MinimaxNodes
 				uci.Engine.DoMove(move)
 				eval := -MinimaxOutRecursive(depth+1, append(line, zobrist))
 				if eval == int(InfinityScore) {
@@ -1114,6 +1130,8 @@ func MinimaxOutRecursive(depth int, line []uint64) int {
 				}
 				mentry.Eval = eval
 				mentry.HasEval = true
+				nodes := MinimaxNodes - startnodes
+				mentry.Nodes = nodes
 				if eval > alpha {
 					alpha = eval
 				}
@@ -1282,6 +1300,37 @@ func AddMove(line string) bool {
 ///////////////////////////////////////////////
 
 ///////////////////////////////////////////////
+// AddMoveUpTo : add book moves to position until input move is added
+// -> san string : algeb
+// <- bool : true if move was added
+
+func AddMoveUpTo(san string) bool {
+	pos := uci.Engine.Position
+	move, err := pos.SANToMove(san)
+	if err !=nil {
+		return false
+	}
+	algeb := move.UCI()
+	added := true
+	DontPrintPV = true
+	for added {
+		posentry, found := pos.GetBookEntry()
+		if found {
+			_, mfound := posentry.MoveEntries[algeb]
+			if mfound {
+				DontPrintPV = false
+				return true
+			}
+		}
+		added = AddMove("+")
+	}
+	DontPrintPV = false
+	return false
+}
+
+///////////////////////////////////////////////
+
+///////////////////////////////////////////////
 // ClearLog : create an empty log.txt file
 
 func ClearLog() {
@@ -1389,6 +1438,13 @@ func ExecuteTest() error {
 				if AnnotateMove() == nil {
 					PrintBookPage()
 				}
+			} else if numargs == 1 {
+				if AddMoveUpTo(args[0]) {
+					fmt.Println()
+					PrintBookPage()
+				} else {
+					fmt.Printf("adding move failed\n")
+				}
 			} else {
 				uci.SetVariant(VARIANT_Atomic)
 				uci.PrintBoard()
@@ -1437,6 +1493,9 @@ func ExecuteTest() error {
 			return errTestOk
 		case "bb":
 			StartBuildBook()
+			return errTestOk
+		case "mo":
+			MinimaxOutVerbose()
 			return errTestOk
 		case "q":
 			if BookBuildingUnderWay {
